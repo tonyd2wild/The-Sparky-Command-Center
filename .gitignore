@@ -1,0 +1,12 @@
+# Local config with real infrastructure details - never commit this
+config.json
+
+# Runtime / cache
+data/
+__pycache__/
+*.pyc
+*.log
+
+# Editor / OS cruft
+*.bak*
+.DS_Store

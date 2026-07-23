@@ -1,0 +1,143 @@
+{
+  "_comment": "Copy this file to config.json and edit it for YOUR hardware. JSON has no comment syntax, so every field is documented in README.md (Configuration section). Any key starting with an underscore is ignored by the loader, so the _comment / _help fields below are safe to keep or delete.",
+
+  "_help": {
+    "server.title": "Text shown in the header and browser tab.",
+    "server.subtitle": "Small line under the title.",
+    "server.bind": "Interface to bind. 0.0.0.0 = all interfaces, 127.0.0.1 = localhost only.",
+    "server.port": "HTTP port for the dashboard.",
+    "server.browser_refresh_ms": "How often the browser re-polls /api/metrics, in milliseconds.",
+    "ssh.default_key": "SSH private key used for any node/switch that does not set its own ssh_key.",
+    "ssh.connect_timeout": "Seconds to wait for an SSH connection before giving up.",
+    "ssh.options": "Extra '-o Key=Value' options applied to every ssh call.",
+    "defaults": "Fallback poll intervals and temperature thresholds for nodes/models that do not set their own.",
+    "nodes[].name": "Display name for the node (a DGX Spark, a 3090 box, any GPU host).",
+    "nodes[].host": "Hostname or IP reachable over SSH.",
+    "nodes[].user": "SSH username.",
+    "nodes[].ssh_key": "Optional per-node key path (overrides ssh.default_key).",
+    "nodes[].port": "Optional SSH port (default 22).",
+    "nodes[].jump_host": "Optional bastion/jump host (SSH ProxyJump). Reach a node only accessible from another box.",
+    "nodes[].jump_user": "Optional username for the jump host.",
+    "nodes[].poll_interval": "Optional per-node SSH poll cadence in seconds.",
+    "nodes[].temp_warn": "Optional GPU temp (C) that turns the pill yellow.",
+    "nodes[].temp_hot": "Optional GPU temp (C) that turns the pill red.",
+    "nodes[].models[]": "One or more inference servers running ON this node. Add several to watch multiple model shapes on the same box.",
+    "models[]": "Fleet-wide model instances not tied to a single node (e.g. run two instances across the cluster and watch both). Same fields as node models, plus an optional 'group' header.",
+    "models[].label": "Display name for the model card.",
+    "models[].endpoint": "Base URL of the inference server (vLLM or llama.cpp). /metrics and /v1/models are appended.",
+    "models[].port": "Optional port label shown on the card.",
+    "models[].model": "Optional served alias to prefer when /v1/models lists several ids.",
+    "models[].gpus": "Optional human label, e.g. 'GPU 0-1' or 'Sparks 1-2 (TP=2)'.",
+    "models[].group": "Optional section header for fleet-wide instances.",
+    "switch": "OPTIONAL fabric-switch panel (MikroTik / RouterOS over SSH). Delete the whole block to hide the panel.",
+    "switch.host": "Hostname or IP of the switch, reachable over SSH.",
+    "switch.user": "RouterOS SSH username.",
+    "switch.ports": "Fabric interfaces to show throughput for. Omit or [] to auto-detect running interfaces."
+  },
+
+  "server": {
+    "title": "Sparky Command Center",
+    "subtitle": "DGX Spark fleet + GPU boxes - GPU / CPU / mem / temp / power + per-model decode, prefill, TTFT",
+    "bind": "0.0.0.0",
+    "port": 8890,
+    "browser_refresh_ms": 2500
+  },
+
+  "ssh": {
+    "default_key": "~/.ssh/id_ed25519",
+    "connect_timeout": 8,
+    "options": {
+      "IdentitiesOnly": "yes",
+      "BatchMode": "yes",
+      "StrictHostKeyChecking": "accept-new"
+    }
+  },
+
+  "defaults": {
+    "poll_interval": 6.0,
+    "model_poll_interval": 6.0,
+    "temp_warn": 70,
+    "temp_hot": 84
+  },
+
+  "switch": {
+    "name": "RoCE Fabric Switch",
+    "badge": "RoCE FABRIC",
+    "host": "switch.example.local",
+    "user": "admin",
+    "ssh_key": "~/.ssh/id_ed25519",
+    "port": 22,
+    "poll_interval": 8.0,
+    "temp_warn": 55,
+    "temp_hot": 70,
+    "ports": ["qsfp28-1-1", "qsfp28-1-2", "qsfp28-1-3", "qsfp28-1-4"]
+  },
+
+  "nodes": [
+    {
+      "name": "spark1",
+      "host": "spark1.example.local",
+      "user": "youruser",
+      "models": [
+        {
+          "label": "my-model-7b",
+          "endpoint": "http://spark1.example.local:8000",
+          "port": 8000,
+          "model": "my-model-7b",
+          "gpus": "GPU 0"
+        },
+        {
+          "label": "my-model-3b (second shape on the same box)",
+          "endpoint": "http://spark1.example.local:8001",
+          "port": 8001,
+          "gpus": "GPU 0"
+        }
+      ]
+    },
+    {
+      "name": "gpu-box",
+      "host": "gpu-box.example.local",
+      "user": "youruser",
+      "ssh_key": "~/.ssh/id_ed25519",
+      "port": 22,
+      "poll_interval": 6.0,
+      "temp_warn": 70,
+      "temp_hot": 84,
+      "models": [
+        {
+          "label": "my-model-70b",
+          "endpoint": "http://gpu-box.example.local:8010",
+          "port": 8010,
+          "gpus": "GPU 0-3"
+        }
+      ]
+    },
+    {
+      "name": "spark2",
+      "host": "spark2.internal",
+      "user": "youruser",
+      "jump_host": "bastion.example.local",
+      "jump_user": "youruser",
+      "models": []
+    }
+  ],
+
+  "models": [
+    {
+      "group": "Big model - two instances across the fleet",
+      "label": "Instance A (Sparks 1-2 · TP=2)",
+      "endpoint": "http://spark1.example.local:8100",
+      "port": 8100,
+      "model": "my-big-model",
+      "gpus": "Sparks 1-2 (TP=2)"
+    },
+    {
+      "group": "Big model - two instances across the fleet",
+      "label": "Instance B (Sparks 3-4 · TP=2)",
+      "endpoint": "http://spark3.example.local:8100",
+      "port": 8100,
+      "model": "my-big-model",
+      "gpus": "Sparks 3-4 (TP=2)"
+    }
+  ]
+}
