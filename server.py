@@ -47,6 +47,12 @@ DEFAULTS = {
         "bind": "0.0.0.0",
         "port": 8890,
         "browser_refresh_ms": 2500,
+        # Cumulative token-served tracker. vLLM/llama.cpp expose prompt/generation
+        # token counters that RESET on server restart; when enabled we bank the
+        # deltas into token_store so a restart never zeroes the running history.
+        # Works for every configured model with no extra config. Set false to skip.
+        "token_tracking": True,
+        "token_store": "data/token_usage.json",
     },
     "ssh": {
         "default_key": "~/.ssh/id_ed25519",
@@ -482,6 +488,122 @@ def _kv_pct(val):
     return round(val * 100.0, 1) if val <= 1.0 else round(val, 1)
 
 
+# ----------------------------------------------------------------------------
+# Cumulative token tracker (banks prompt/generation counters across restarts)
+# ----------------------------------------------------------------------------
+# vLLM (vllm:prompt_tokens_total / vllm:generation_tokens_total) and llama.cpp
+# (llamacpp:prompt_tokens_total / llamacpp:tokens_predicted_total) expose
+# monotonic token counters that RESET to 0 whenever the inference server
+# restarts. poll_model already reads these for the tok/s rate; here we bank the
+# deltas into a persistent JSON store so a restart never zeroes the running
+# history, plus a per-day bucket that rolls over at local midnight.
+TOKEN_STORE = None            # abs path, set in main() when token_tracking is on
+_tokens = {}                  # model key -> banked record
+_tokens_lock = threading.Lock()
+_tokens_dirty = False
+_tokens_last_save = 0.0
+TOKEN_SAVE_EVERY = 25.0       # seconds; throttle disk writes
+
+
+def _load_tokens():
+    global _tokens
+    if not TOKEN_STORE:
+        return
+    try:
+        with open(TOKEN_STORE, "r", encoding="utf-8") as f:
+            _tokens = json.load(f)
+    except Exception:  # noqa - missing/corrupt store just starts fresh
+        _tokens = {}
+
+
+def _save_tokens(force=False):
+    """Atomically persist the token store, throttled to TOKEN_SAVE_EVERY."""
+    global _tokens_dirty, _tokens_last_save
+    if not TOKEN_STORE:
+        return
+    now = time.time()
+    with _tokens_lock:
+        if not _tokens_dirty or (not force and now - _tokens_last_save < TOKEN_SAVE_EVERY):
+            return
+        snap = json.dumps(_tokens, indent=2)
+        _tokens_dirty = False
+        _tokens_last_save = now
+    try:
+        d = os.path.dirname(os.path.abspath(TOKEN_STORE))
+        if d:
+            os.makedirs(d, exist_ok=True)
+        tmp = TOKEN_STORE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(snap)
+        os.replace(tmp, TOKEN_STORE)
+    except Exception:  # noqa - never let a write error take down the poller
+        pass
+
+
+def _bank_counter(rec, cur, f_total, f_last, f_today):
+    """Accumulate one monotonic-with-resets counter into a total + today bucket."""
+    last = rec.get(f_last)
+    if last is None:
+        # First observation: seed the total with the current running-session value
+        # so the tracker shows real numbers immediately, but start today fresh
+        # (we cannot attribute the pre-existing count to today).
+        rec[f_total] = cur
+        rec[f_last] = cur
+        rec.setdefault(f_today, 0.0)
+        return
+    delta = (cur - last) if cur >= last else cur   # cur < last => server restarted
+    rec[f_total] = rec.get(f_total, 0.0) + delta
+    rec[f_today] = rec.get(f_today, 0.0) + delta
+    rec[f_last] = cur
+
+
+def bank_tokens(m, prompt_tok, gen_tok):
+    """Bank a model's cumulative token counters. Called from poll_model. No-op
+    when token tracking is disabled or the server exposes no token counters."""
+    global _tokens_dirty
+    if not TOKEN_STORE or (prompt_tok is None and gen_tok is None):
+        return
+    today = time.strftime("%Y-%m-%d", time.localtime())
+    with _tokens_lock:
+        rec = _tokens.setdefault(m["key"], {})
+        rec["label"] = m["label"]
+        rec["node"] = m.get("node_name") or m.get("node")
+        rec["gpus"] = m.get("gpus")
+        if rec.get("today_date") != today:      # roll the day bucket at midnight
+            rec["today_date"] = today
+            rec["today_prompt"] = 0.0
+            rec["today_gen"] = 0.0
+        if prompt_tok is not None:
+            _bank_counter(rec, prompt_tok, "total_prompt", "last_prompt", "today_prompt")
+        if gen_tok is not None:
+            _bank_counter(rec, gen_tok, "total_gen", "last_gen", "today_gen")
+        rec["total_tokens"] = rec.get("total_prompt", 0.0) + rec.get("total_gen", 0.0)
+        rec["today_tokens"] = rec.get("today_prompt", 0.0) + rec.get("today_gen", 0.0)
+        rec["ts"] = time.time()
+        _tokens_dirty = True
+    _save_tokens()
+
+
+def tokens_snapshot():
+    """Read-only view of the banked token store for the API/UI. Copies under the
+    token lock, then reads liveness under the node lock - never both at once."""
+    if not TOKEN_STORE:
+        return {"enabled": False, "models": [], "total": 0, "today": 0}
+    with _tokens_lock:
+        recs = [dict(v, key=k) for k, v in _tokens.items()]
+    with _lock:
+        for r in recs:
+            st = STATE["models"].get(r["key"]) or {}
+            r["reachable"] = bool(st.get("reachable"))
+    recs.sort(key=lambda r: r.get("total_tokens", 0), reverse=True)
+    return {
+        "enabled": True,
+        "models": recs,
+        "total": sum(r.get("total_tokens", 0) for r in recs),
+        "today": sum(r.get("today_tokens", 0) for r in recs),
+    }
+
+
 def poll_model(m):
     """Scrape one model server's /metrics + /v1/models. Computes decode/prefill
     tok/s as deltas between polls. Handles both vLLM and llama.cpp metric names."""
@@ -540,6 +662,10 @@ def poll_model(m):
         return res
 
     res["reachable"] = True
+
+    # bank cumulative token counters into the persistent tracker (survives the
+    # inference server restarting, which zeroes these counters)
+    bank_tokens(m, prompt_tok, gen_tok)
 
     # rate computation from the delta vs the previous poll
     prev = _model_prev.get(m["key"])
@@ -690,6 +816,7 @@ def snapshot():
         "switch": switch,
         "nodes": nodes,
         "fleet_models": fleet_models,
+        "tokens": tokens_snapshot(),
         "history": hist,
         "agg": {
             "gpu_count": gpu_count,
@@ -725,6 +852,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/metrics"):
             self._send(200, json.dumps(snapshot()), "application/json")
+            return
+        if self.path.startswith("/api/tokens"):
+            self._send(200, json.dumps(tokens_snapshot()), "application/json")
             return
         if self.path == "/healthz":
             self._send(200, "ok", "text/plain")
@@ -903,6 +1033,7 @@ PAGE = r"""<!DOCTYPE html>
 </svg>
 
 <div class="summary" id="summary"></div>
+<div id="token-tracker"></div>
 <div id="switch"></div>
 <div id="nodes"></div>
 <div id="fleet-models"></div>
@@ -996,6 +1127,35 @@ function renderNodeSys(node){
   </div>`;
 }
 
+function fmtTok(n){
+  n = +n || 0;
+  if(n >= 1e9) return (n/1e9).toFixed(2)+'B';
+  if(n >= 1e6) return (n/1e6).toFixed(2)+'M';
+  if(n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  return String(Math.round(n));
+}
+function renderTokens(tk){
+  if(!tk || !tk.enabled || !(tk.models && tk.models.length)) return '';
+  const cards = tk.models.map(m=>{
+    const on = m.reachable;
+    return `<div class="card modcard${on?'':' stale'}">
+      <h2><span class="dot ${on?'on':'off'}"></span>${escH(m.label||m.key)}
+        ${m.gpus?`<span class="badge violet">${escH(m.gpus)}</span>`:''}</h2>
+      <div class="big" style="color:var(--accent)">${fmtTok(m.total_tokens)}</div>
+      <div class="sub">tokens served · cumulative</div>
+      <div class="stack" style="margin-top:12px">
+        <div><div class="sub">prompt</div><div class="val" style="font-size:17px">${fmtTok(m.total_prompt)}</div></div>
+        <div><div class="sub">generated</div><div class="val" style="font-size:17px">${fmtTok(m.total_gen)}</div></div>
+        <div><div class="sub">today</div><div class="val" style="font-size:17px;color:var(--accent2)">${fmtTok(m.today_tokens)}</div></div>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="section-h">🎫 Token Tracker
+      <span class="badge">${fmtTok(tk.total)} total</span>
+      <span class="badge violet">${fmtTok(tk.today)} today</span>
+      <span class="ln"></span></div>
+    <div class="grid">${cards}</div>`;
+}
 function fmtTps(v){
   if(v==null) return '-';
   return v>=100? v.toFixed(0) : v.toFixed(1);
@@ -1111,6 +1271,8 @@ function render(s){
     <div class="scard"><div class="k">Hottest GPU</div><div class="v ${agg.hottest_temp>=84?'red':'green'}" style="font-size:22px">${escH(agg.hottest_unit||'-')}<span class="u">${agg.hottest_temp!=null?agg.hottest_temp.toFixed(0)+'°C':''}</span></div></div>
     <div class="scard"><div class="k">Fleet Status</div><div class="v ${agg.all_ok?'green':'red'}" style="font-size:22px">${agg.all_ok?'● ALL OK':'● DEGRADED'}</div></div>`;
 
+  document.getElementById('token-tracker').innerHTML = renderTokens(s.tokens);
+
   const hist = s.history||{};
   document.getElementById('switch').innerHTML = renderSwitch(s.switch);
   document.getElementById('nodes').innerHTML =
@@ -1152,8 +1314,12 @@ let timer = setInterval(tick, interval);
 
 
 def main():
-    global CFG
+    global CFG, TOKEN_STORE
     CFG = load_config()
+    if CFG["server"].get("token_tracking", True):
+        store = CFG["server"].get("token_store") or "data/token_usage.json"
+        TOKEN_STORE = os.path.expanduser(store)
+        _load_tokens()
     start_pollers()
     bind, port = CFG["server"]["bind"], int(CFG["server"]["port"])
     httpd = ThreadingHTTPServer((bind, port), Handler)

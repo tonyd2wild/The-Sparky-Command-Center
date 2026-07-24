@@ -7,6 +7,8 @@
     "server.bind": "Interface to bind. 0.0.0.0 = all interfaces, 127.0.0.1 = localhost only.",
     "server.port": "HTTP port for the dashboard.",
     "server.browser_refresh_ms": "How often the browser re-polls /api/metrics, in milliseconds.",
+    "server.token_tracking": "Track cumulative tokens served per model (the 'Token Tracker' panel + /api/tokens). Reads the same /metrics counters already polled, banks the deltas across inference-server restarts. Set false to disable. Default true.",
+    "server.token_store": "Path to the persistent token-usage JSON (banked totals + per-day buckets). Relative paths resolve from the working directory. Default 'data/token_usage.json' (the data/ dir is gitignored).",
     "ssh.default_key": "SSH private key used for any node/switch that does not set its own ssh_key.",
     "ssh.connect_timeout": "Seconds to wait for an SSH connection before giving up.",
     "ssh.options": "Extra '-o Key=Value' options applied to every ssh call.",
@@ -40,7 +42,9 @@
     "subtitle": "DGX Spark fleet + GPU boxes - GPU / CPU / mem / temp / power + per-model decode, prefill, TTFT",
     "bind": "0.0.0.0",
     "port": 8890,
-    "browser_refresh_ms": 2500
+    "browser_refresh_ms": 2500,
+    "token_tracking": true,
+    "token_store": "data/token_usage.json"
   },
 
   "ssh": {

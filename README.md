@@ -13,6 +13,7 @@ Point it at your own hardware with a single `config.json`. No database, no build
 - **Per-node system metrics** — CPU temperature (AMD `k10temp`, Intel `coretemp`, ARM `cpu_thermal`, and more), extra CPU sensors, and system RAM. Works for DGX Sparks and any other Linux GPU host.
 - **Per-model inference metrics** — decode tok/s, prefill tok/s, TTFT, KV-cache usage, and running/waiting request counts, scraped from each model's Prometheus `/metrics`. Works with **vLLM** and **llama.cpp** servers.
 - **Multiple instances, side by side** — run more than one model shape on a node, *or* run two instances across the fleet, and each gets its own perf card (separate decode / prefill / TTFT / KV).
+- **Cumulative token tracker** — a **Token Tracker** panel (and a `/api/tokens` endpoint) showing total tokens served per model, split into prompt vs generated, plus a per-day bucket. It banks the same `/metrics` token counters the perf cards already read, so a model-server restart (which zeroes those counters) never wipes your running history. Works out of the box for every configured model; toggle with `server.token_tracking`.
 - **Optional RoCE fabric-switch panel** — MikroTik / RouterOS over SSH: switch and CPU temps, fans, PSUs, uptime, and live per-port fabric throughput with link speeds. Add a `switch` block to enable it, delete the block to hide it.
 - **Config-driven** — every node, host, user, SSH key, jump host, model endpoint, port, and label lives in `config.json`. Add or remove nodes and models by editing one file.
 - **Bastion / jump-host support** — reach nodes that are only accessible through another box via standard SSH ProxyJump.
@@ -72,6 +73,10 @@ The config is a single JSON file (default `./config.json`, override with the `CO
 | `bind` | Interface to bind. `0.0.0.0` = all interfaces, `127.0.0.1` = localhost only. | `"0.0.0.0"` |
 | `port` | HTTP port for the dashboard. | `8890` |
 | `browser_refresh_ms` | How often the browser re-polls `/api/metrics`, in milliseconds. | `2500` |
+| `token_tracking` | Track cumulative tokens served per model (the Token Tracker panel + `/api/tokens`). Reads the `/metrics` counters already polled and banks the deltas across inference-server restarts. Set `false` to disable. | `true` |
+| `token_store` | Path to the persistent token-usage JSON (banked totals + per-day buckets). Relative paths resolve from the working directory. The default lives under the gitignored `data/` dir. | `"data/token_usage.json"` |
+
+> **How the token tracker stays honest across restarts.** vLLM / llama.cpp expose *monotonic* `prompt_tokens_total` / `generation_tokens_total` counters that reset to `0` every time the server restarts. The tracker snapshots them each poll and banks the delta into `token_store`; when it sees the counter go *backwards* it treats that as a restart and adds the new value from `0`. On first sight of a model it seeds the total with the current running-session value so the numbers are real immediately, and the per-day bucket rolls over at local midnight.
 
 ### `ssh`
 
@@ -161,7 +166,7 @@ See `config.example.json` for a complete, ready-to-edit starting point (it shows
 - **Model pollers** fetch each endpoint's Prometheus `/metrics` and `/v1/models` over HTTP, and compute decode/prefill tok/s as a rate between consecutive polls (TTFT and KV-cache come straight from the metrics).
 - **The switch poller** SSHes into RouterOS and runs `print` / `monitor once` queries for health, resources, and interface counters, computing per-port throughput as a delta between polls.
 - The browser polls `/api/metrics` (a JSON snapshot of the cache) on the configured cadence and renders the dashboard client-side. Polling and the browser refresh are fully decoupled, so a slow or unreachable node never blocks the page.
-- Endpoints: `/` (dashboard), `/api/metrics` (JSON snapshot), `/healthz` (plain `ok`).
+- Endpoints: `/` (dashboard), `/api/metrics` (JSON snapshot), `/api/tokens` (banked cumulative token totals per model), `/healthz` (plain `ok`).
 
 ## Contributing
 
