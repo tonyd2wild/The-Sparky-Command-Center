@@ -227,10 +227,10 @@ _NODE_REMOTE = (
     '--format=csv,noheader,nounits 2>/dev/null; '
     'echo PIPECPU; '
     'for h in /sys/class/hwmon/hwmon*; do n=$(cat "$h/name" 2>/dev/null); '
-    'case "$n" in k10temp|coretemp|cpu_thermal|zenpower|nct6*) '
+    'case "$n" in k10temp|coretemp|cpu_thermal|zenpower|nct6*|acpitz) '
     'cat "$h"/temp*_input 2>/dev/null;; esac; done; '
     'echo PIPEMEM; '
-    'free -m | awk "/^Mem:/{print \\$2, \\$3}"'
+    'LC_ALL=C free -m | awk "/^Mem:/{print \\$2, \\$3}"'
 )
 
 
@@ -293,7 +293,7 @@ def poll_node(node):
 
         cpu_vals = [int(x) / 1000.0 for x in cpu_part.strip().splitlines() if x.strip().isdigit()]
         if cpu_vals:
-            res["cpu_temps"] = [round(v, 1) for v in cpu_vals]
+            res["cpu_temps"] = sorted((round(v, 1) for v in cpu_vals), reverse=True)
             res["cpu_temp"] = res["cpu_temps"][0]
 
         ml = mem_part.strip().splitlines()
@@ -1114,11 +1114,11 @@ function renderNodeSys(node){
       <span class="badge violet">HOST</span></h2>
     ${reach? `
     <div class="stack">
-      <div><div class="sub">CPU Temp</div>
+      <div><div class="sub">Host Temp</div>
         <div class="big">${node.cpu_temp!=null?node.cpu_temp.toFixed(0):'-'}<span style="font-size:16px;color:var(--dim)">°C</span></div>
         ${tempPill(node.cpu_temp,node.temp_warn+5,node.temp_hot+6)}</div>
     </div>
-    ${(node.cpu_temps||[]).slice(1).map((t,i)=>`<div class="row"><span class="label">cpu sensor #${i+2}</span><span class="val">${t.toFixed(1)} °C</span></div>`).join('')}
+    ${(node.cpu_temps||[]).slice(1).map((t,i)=>`<div class="row"><span class="label">host sensor #${i+2}</span><span class="val">${t.toFixed(1)} °C</span></div>`).join('')}
     <div class="row"><span class="label">System RAM</span><span class="val">${node.mem_used_mb!=null?(node.mem_used_mb/1024).toFixed(1):'-'} / ${node.mem_total_mb!=null?(node.mem_total_mb/1024).toFixed(1):'-'} GiB</span></div>
     <div class="bar"><span style="width:${node.mem_pct||0}%"></span></div>
     <div class="row"><span class="label">GPUs</span><span class="val">${(node.gpus||[]).length}</span></div>
