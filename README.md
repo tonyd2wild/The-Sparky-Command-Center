@@ -14,6 +14,8 @@ Point it at your own hardware with a single `config.json`. No database, no build
 - **Per-model inference metrics** — decode tok/s, prefill tok/s, TTFT, KV-cache usage, and running/waiting request counts, scraped from each model's Prometheus `/metrics`. Works with **vLLM** and **llama.cpp** servers.
 - **Multiple instances, side by side** — run more than one model shape on a node, *or* run two instances across the fleet, and each gets its own perf card (separate decode / prefill / TTFT / KV).
 - **Cumulative token tracker** — a **Token Tracker** panel (and a `/api/tokens` endpoint) showing total tokens served per model, split into prompt vs generated, plus a per-day bucket. It banks the same `/metrics` token counters the perf cards already read, so a model-server restart (which zeroes those counters) never wipes your running history. Works out of the box for every configured model; toggle with `server.token_tracking`.
+- **Optional video / image generation lanes** — a **Video Generation** panel (and `/api/comfy`) for ComfyUI-style servers, one card per GPU or instance: live VRAM used with a usage bar, free/total, queue depth, an idle / RENDERING / offline state light, and a click-through link into that lane's own UI. Each card also carries a **peak-while-rendering high-water mark**, which is the number that actually matters for capacity planning: these models load their components one at a time, so idle understates the footprint and summing the parts overstates it. Add `comfy_lanes` to enable; the panel hides itself entirely when the list is empty.
+- **Collapsible, re-orderable panels** — every panel has a header you can click to collapse, a **Collapse all / Expand all** toggle, and a **Rearrange** mode that lets you drag panels into whatever order you want. Layout is saved per browser in `localStorage`, so the server stays stateless and nothing is shared between viewers.
 - **Optional RoCE fabric-switch panel** — MikroTik / RouterOS over SSH: switch and CPU temps, fans, PSUs, uptime, and live per-port fabric throughput with link speeds. Add a `switch` block to enable it, delete the block to hide it.
 - **Config-driven** — every node, host, user, SSH key, jump host, model endpoint, port, and label lives in `config.json`. Add or remove nodes and models by editing one file.
 - **Bastion / jump-host support** — reach nodes that are only accessible through another box via standard SSH ProxyJump.
@@ -75,6 +77,7 @@ The config is a single JSON file (default `./config.json`, override with the `CO
 | `browser_refresh_ms` | How often the browser re-polls `/api/metrics`, in milliseconds. | `2500` |
 | `token_tracking` | Track cumulative tokens served per model (the Token Tracker panel + `/api/tokens`). Reads the `/metrics` counters already polled and banks the deltas across inference-server restarts. Set `false` to disable. | `true` |
 | `token_store` | Path to the persistent token-usage JSON (banked totals + per-day buckets). Relative paths resolve from the working directory. The default lives under the gitignored `data/` dir. | `"data/token_usage.json"` |
+| `comfy_poll_seconds` | How often each video/image lane is polled, in seconds. Kept tight so a render's VRAM peak is not missed between samples. | `4` |
 
 > **How the token tracker stays honest across restarts.** vLLM / llama.cpp expose *monotonic* `prompt_tokens_total` / `generation_tokens_total` counters that reset to `0` every time the server restarts. The tracker snapshots them each poll and banks the delta into `token_store`; when it sees the counter go *backwards* it treats that as a restart and adds the new value from `0`. On first sight of a model it seeds the total with the current running-session value so the numbers are real immediately, and the per-day bucket rolls over at local midnight.
 
@@ -130,6 +133,35 @@ Model cards can come from two places, and both accept the same fields:
 | `model` | no | Served alias to prefer when `/v1/models` lists several ids. |
 | `gpus` | no | Human label for the GPUs the model uses, e.g. `"GPU 0-1"` or `"Sparks 1-2 (TP=2)"`. |
 | `group` | no | (Top-level `models[]` only) Section header shared by a set of instances. |
+
+### `comfy_lanes[]` (optional)
+
+ComfyUI-style image/video servers. One entry per GPU or per instance. Omit the
+list (or leave it empty) and the Video Generation panel does not render at all.
+
+| Field | Meaning | Required |
+|---|---|---|
+| `url` | Base URL of the ComfyUI server, e.g. `http://10.0.0.10:8188`. Also the click-through link on the card. | yes |
+| `key` | Stable id for the lane. Derived from `name` when omitted. | no |
+| `lane` | Short label shown on the card badge, e.g. `A`. Defaults to the position. | no |
+| `name` | Human label, e.g. `gpu-box · GPU 0`. | no |
+| `host` | Free-text machine name shown in the card footer. | no |
+
+```json
+"comfy_lanes": [
+  { "key": "lane-a", "lane": "A", "name": "gpu-box · GPU 0", "host": "gpu-box", "url": "http://10.0.0.10:8188" },
+  { "key": "lane-b", "lane": "B", "name": "gpu-box · GPU 1", "host": "gpu-box", "url": "http://10.0.0.10:8189" }
+]
+```
+
+Two instances on the *same* GPU box are normal and cheap: ComfyUI mmaps the
+model weights, so a second instance costs a few GB rather than a second full
+copy. Give each instance its own `--temp-directory`, `--database-url` and
+`--user-directory` when you launch it, or they will fight over state.
+
+Polling is read-only: `GET /system_stats` for liveness and VRAM, `GET /queue`
+for running/pending counts. It is done server-side because ComfyUI sends no
+CORS headers, so a browser could not read these endpoints cross-origin.
 
 ### `switch` (optional)
 

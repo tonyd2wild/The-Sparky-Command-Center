@@ -152,9 +152,26 @@ def load_config(path=None):
             "temp_hot": sw_raw.get("temp_hot", 70),
         }
 
+    # Optional ComfyUI-style image/video lanes. `url` is the only required
+    # field; everything else falls back so a minimal entry still renders.
+    lanes = []
+    for li, ln in enumerate(raw.get("comfy_lanes", []) or []):
+        if not ln.get("url"):
+            continue
+        key = ln.get("key") or re.sub(r"[^a-zA-Z0-9]+", "-",
+                                      ln.get("name") or f"lane{li + 1}").strip("-").lower()
+        lanes.append({
+            "key": key,
+            "lane": ln.get("lane") or str(li + 1),
+            "name": ln.get("name") or key,
+            "host": ln.get("host", ""),
+            "url": ln["url"].rstrip("/"),
+        })
+
     cfg["nodes"] = nodes
     cfg["models"] = models
     cfg["switch"] = switch
+    cfg["comfy_lanes"] = lanes
     return cfg
 
 
@@ -184,7 +201,7 @@ CFG = None  # populated in main()
 # Shared state (one slice per node/model; each poller writes its own slice)
 # ----------------------------------------------------------------------------
 _lock = threading.Lock()
-STATE = {"nodes": {}, "models": {}, "switch": None}
+STATE = {"nodes": {}, "models": {}, "switch": None, "comfy": {}}
 _hist = {}  # sparkline history, keyed e.g. "node:<nodekey>:<gpuindex>:temp"
 _iface_prev = {}  # switch interface byte counters for throughput deltas: (swkey,port) -> (ts,rx,tx)
 _port_rate = {}   # switch static port link rate cache: (swkey,port) -> "100Gbps"
@@ -746,6 +763,83 @@ def _switch_loop(sw):
         time.sleep(sw["poll_interval"])
 
 
+def poll_comfy(lane):
+    """Scrape one ComfyUI-style image/video lane.
+
+    /system_stats gives liveness + device VRAM; /queue gives running/pending.
+    A lane that is down is a normal state, not an error. Polled server-side
+    because ComfyUI sends no CORS headers, so a browser fetch cannot read it.
+    """
+    out = {"key": lane["key"], "lane": lane.get("lane") or lane["key"],
+           "name": lane.get("name") or lane["key"], "host": lane.get("host", ""),
+           "url": lane["url"], "reachable": False, "ts": time.time(),
+           "vram_total": None, "vram_free": None, "vram_used": None,
+           "version": None, "running": 0, "pending": 0, "busy": False}
+    ok, body = _http_get(lane["url"] + "/system_stats", timeout=5)
+    if not ok:
+        return out
+    try:
+        d = json.loads(body)
+    except Exception:
+        return out
+    out["reachable"] = True
+    out["version"] = (d.get("system") or {}).get("comfyui_version")
+    devs = d.get("devices") or []
+    if devs:
+        tot, free = devs[0].get("vram_total"), devs[0].get("vram_free")
+        if isinstance(tot, (int, float)) and isinstance(free, (int, float)):
+            out["vram_total"], out["vram_free"] = tot, free
+            out["vram_used"] = max(0, tot - free)
+    ok2, qbody = _http_get(lane["url"] + "/queue", timeout=5)
+    if ok2:
+        try:
+            q = json.loads(qbody)
+            out["running"] = len(q.get("queue_running") or [])
+            out["pending"] = len(q.get("queue_pending") or [])
+            out["busy"] = out["running"] > 0
+        except Exception:
+            pass
+    return out
+
+
+def _comfy_loop(lane, delay):
+    """Poll a lane forever, latching a HIGH-WATER MARK across polls.
+
+    Peak is the number that matters for capacity planning: these models load
+    their components one at a time, so idle understates and the sum of the
+    parts overstates. Only a real render shows the true ceiling, and it lands
+    between polls, so it is latched here rather than sampled for. `peak_busy`
+    latches only while a job is in flight, which keeps a noisy neighbour on the
+    same box out of the model's number.
+    """
+    ttl = float((CFG.get("server") or {}).get("comfy_poll_seconds") or 4.0)
+    time.sleep(delay)
+    while True:
+        try:
+            r = poll_comfy(lane)
+        except Exception as e:  # noqa - a down lane must never kill the poller
+            r = {"key": lane["key"], "lane": lane.get("lane") or lane["key"],
+                 "name": lane.get("name") or lane["key"], "host": lane.get("host", ""),
+                 "url": lane["url"], "reachable": False, "ts": time.time(),
+                 "err": str(e)[:140], "running": 0, "pending": 0, "busy": False}
+        with _lock:
+            prev = STATE["comfy"].get(lane["key"]) or {}
+            for fld, only_busy in (("peak_used", False), ("peak_busy", True)):
+                cur = r.get("vram_used")
+                if only_busy and not r.get("busy"):
+                    cur = None
+                old = prev.get(fld)
+                r[fld] = max(old or 0, cur) if cur is not None else old
+            STATE["comfy"][lane["key"]] = r
+        time.sleep(ttl)
+
+
+def comfy_snapshot():
+    with _lock:
+        return {"lanes": [STATE["comfy"].get(l["key"], {})
+                          for l in (CFG.get("comfy_lanes") or [])]}
+
+
 def start_pollers():
     for i, node in enumerate(CFG["nodes"]):
         STATE["nodes"][node["key"]] = {
@@ -766,6 +860,14 @@ def start_pollers():
                            "ports": [], "total_bps": 0,
                            "temp_warn": sw["temp_warn"], "temp_hot": sw["temp_hot"]}
         threading.Thread(target=_switch_loop, args=(sw,), daemon=True).start()
+    for i, ln in enumerate(CFG.get("comfy_lanes") or []):
+        STATE["comfy"][ln["key"]] = {
+            "key": ln["key"], "lane": ln.get("lane") or ln["key"],
+            "name": ln.get("name") or ln["key"], "host": ln.get("host", ""),
+            "url": ln["url"], "reachable": False, "ts": 0,
+            "err": "warming up", "running": 0, "pending": 0, "busy": False}
+        threading.Thread(target=_comfy_loop, args=(ln, 0.6 + i * 0.4),
+                         daemon=True).start()
 
 
 # ----------------------------------------------------------------------------
@@ -856,6 +958,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/tokens"):
             self._send(200, json.dumps(tokens_snapshot()), "application/json")
             return
+        if self.path.startswith("/api/comfy"):
+            self._send(200, json.dumps(comfy_snapshot()), "application/json")
+            return
         if self.path == "/healthz":
             self._send(200, "ok", "text/plain")
             return
@@ -870,18 +975,24 @@ PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root{
-    --bg:#0a0e14; --bg2:#0f1520; --card:rgba(22,28,40,0.65); --border:rgba(120,160,220,0.18);
-    --txt:#e6edf6; --dim:#8a96aa; --accent:#5eead4; --accent2:#a78bfa;
-    --green:#34d399; --yellow:#fbbf24; --red:#f87171;
+    /* Burnt-orange on scorched brown. Neutrals carry a warm/brown bias so
+       nothing reads as generic grey beside the accent. Semantic green/yellow/
+       red stay clearly separate in hue from the orange accent, so a warning
+       pill is never mistaken for an accent. */
+    --bg:#0c0805; --bg2:#150e08; --card:rgba(40,27,17,0.62); --border:rgba(224,132,42,0.20);
+    --txt:#f7f1ea; --dim:#a6907c; --accent:#ff7a1a; --accent2:#ffb454;
+    --green:#5ec46a; --yellow:#f0c419; --red:#ff5347;
+    --display:'Futura','Avenir Next Condensed','Oswald','Segoe UI',sans-serif;
+    --mono:'SF Mono','Menlo','JetBrains Mono',ui-monospace,monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
   body{
-    font-family:'SF Pro Display','Segoe UI',system-ui,sans-serif;
+    font-family:'Avenir Next','SF Pro Text','Segoe UI',system-ui,sans-serif;
     background:
-      radial-gradient(1100px 600px at 12% -10%, rgba(94,234,212,0.10), transparent 60%),
-      radial-gradient(900px 500px at 90% 0%, rgba(167,139,250,0.10), transparent 60%),
-      linear-gradient(160deg,#070a10 0%,#0a0e14 100%);
+      radial-gradient(1100px 600px at 12% -10%, rgba(255,122,26,0.13), transparent 60%),
+      radial-gradient(900px 500px at 90% 0%, rgba(140,60,20,0.16), transparent 60%),
+      linear-gradient(160deg,#0a0603 0%,#140d07 100%);
     color:var(--txt); min-height:100vh; padding:24px 32px 60px;
     letter-spacing:0.01em;
   }
@@ -920,6 +1031,44 @@ PAGE = r"""<!DOCTYPE html>
     color:var(--accent2);margin:8px 0 14px;display:flex;align-items:center;gap:10px}
   .section-h.acc{color:var(--accent)}
   .section-h .ln{flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
+
+  h1,.section-h,.card h2,.scard .k,.modbar{font-family:var(--display)}
+  .scard .v,.row .val,.meta .ts,.pill{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* -- Modules: collapse + rearrange --------------------------------------
+     Each panel is wrapped in .mod with its own .modbar handle. Collapse and
+     order are per-browser (localStorage) so the server stays stateless and a
+     wrecked layout is fixed by clearing two keys. */
+  .mod{display:block;margin-bottom:6px}
+  .modbar{display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;
+    font-size:12px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;
+    color:var(--accent2);padding:6px 8px;margin:6px 0 2px -8px;border-radius:8px;
+    transition:background .15s}
+  .modbar:hover{background:rgba(255,122,26,0.07)}
+  .modbar .chev{display:inline-block;transition:transform .18s;font-size:11px;opacity:.85}
+  .modbar .ln{flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
+  .modbar .grip{display:none;cursor:grab;letter-spacing:-2px;color:var(--accent);
+    opacity:.75;font-size:14px}
+  .mod.collapsed .chev{transform:rotate(-90deg)}
+  .mod.collapsed .mod-body{display:none}
+  .mod.collapsed .modbar{opacity:.72}
+
+  .ctl{font-family:var(--display);background:rgba(255,122,26,0.10);color:var(--accent);
+    border:1px solid rgba(255,122,26,0.34);border-radius:8px;padding:6px 12px;
+    font-size:11px;font-weight:700;letter-spacing:0.1em;cursor:pointer;
+    transition:background .15s,color .15s}
+  .ctl:hover{background:rgba(255,122,26,0.20)}
+  .ctl:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .ctl.active{background:var(--accent);color:#1a0d04;border-color:var(--accent)}
+
+  body.rearranging .mod{border:1px dashed rgba(255,122,26,0.45);border-radius:12px;
+    padding:8px 10px;margin-bottom:12px;background:rgba(255,122,26,0.03)}
+  body.rearranging .modbar .grip{display:inline-block}
+  body.rearranging .modbar{cursor:grab}
+  body.rearranging .mod.dragging{opacity:.45}
+  body.rearranging .mod.drop-target{border-color:var(--accent);
+    box-shadow:0 0 0 2px rgba(255,122,26,0.3)}
+  @media (prefers-reduced-motion:reduce){ .modbar,.modbar .chev,.ctl{transition:none} }
   .section-h .badge{font-size:10px;padding:2px 8px;border-radius:8px;background:rgba(94,234,212,0.12);
     color:var(--accent);border:1px solid rgba(94,234,212,0.3);letter-spacing:0.06em}
   .section-h .badge.off{background:rgba(248,113,113,0.15);color:var(--red);border-color:rgba(248,113,113,0.3)}
@@ -1020,23 +1169,46 @@ PAGE = r"""<!DOCTYPE html>
   <div class="meta">
     <div>updated <span class="ts" id="ts">-</span></div>
     <div style="font-size:11px;margin-top:2px" id="refreshnote">browser refresh 2.5s</div>
+    <div style="margin-top:8px;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+      <button id="rearrange-btn" class="ctl" type="button">&#8645; REARRANGE</button>
+      <button id="expand-btn" class="ctl" type="button">&#9776; COLLAPSE ALL</button>
+    </div>
   </div>
 </header>
 
 <svg width="0" height="0" style="position:absolute">
   <defs>
     <linearGradient id="sparkfill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#5eead4" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#5eead4" stop-opacity="0"/>
+      <stop offset="0%" stop-color="#ff7a1a" stop-opacity="0.38"/>
+      <stop offset="100%" stop-color="#ff7a1a" stop-opacity="0"/>
     </linearGradient>
   </defs>
 </svg>
 
 <div class="summary" id="summary"></div>
-<div id="token-tracker"></div>
-<div id="switch"></div>
-<div id="nodes"></div>
-<div id="fleet-models"></div>
+
+<div id="modules">
+  <section class="mod" data-mod="tokens">
+    <div class="modbar"><span class="grip">&#8942;&#8942;</span><span class="chev">&#9662;</span>Token Tracker<span class="ln"></span></div>
+    <div class="mod-body"><div id="token-tracker"></div></div>
+  </section>
+  <section class="mod" data-mod="switch">
+    <div class="modbar"><span class="grip">&#8942;&#8942;</span><span class="chev">&#9662;</span>Fabric Switch<span class="ln"></span></div>
+    <div class="mod-body"><div id="switch"></div></div>
+  </section>
+  <section class="mod" data-mod="nodes">
+    <div class="modbar"><span class="grip">&#8942;&#8942;</span><span class="chev">&#9662;</span>Nodes<span class="ln"></span></div>
+    <div class="mod-body"><div id="nodes"></div></div>
+  </section>
+  <section class="mod" data-mod="fleetmodels">
+    <div class="modbar"><span class="grip">&#8942;&#8942;</span><span class="chev">&#9662;</span>Fleet Models<span class="ln"></span></div>
+    <div class="mod-body"><div id="fleet-models"></div></div>
+  </section>
+  <section class="mod" data-mod="video" id="mod-video" hidden>
+    <div class="modbar"><span class="grip">&#8942;&#8942;</span><span class="chev">&#9662;</span>Video Generation<span class="ln"></span></div>
+    <div class="mod-body"><div class="grid" id="comfy-grid"></div></div>
+  </section>
+</div>
 
 <div class="footer">READ-ONLY - polled over SSH + HTTP /metrics - never disturbs live inference</div>
 
@@ -1308,6 +1480,122 @@ async function tick(){
 }
 tick();
 let timer = setInterval(tick, interval);
+
+// -- Video generation lanes (ComfyUI-style image/video servers) --------------
+// Hidden entirely when no lanes are configured, so the panel costs nothing to
+// a deployment that has none. VRAM is the live number to watch during a
+// render; `peak while rendering` is the capacity-planning number.
+function fmtGB(b){ return b==null ? '-' : (b/1073741824).toFixed(1); }
+function renderComfy(lanes){
+  return lanes.map(function(l){
+    var dead = !l.reachable;
+    var tot = l.vram_total, used = l.vram_used;
+    var pct = (tot && used!=null) ? Math.min(100,(used/tot)*100) : 0;
+    var col = dead ? 'var(--dim)' : pct>85 ? 'var(--red)' : pct>60 ? 'var(--yellow)' : 'var(--green)';
+    var state = dead ? '\u25cf offline' : l.busy ? '\u25cf RENDERING' : '\u25cf idle';
+    var stcol = dead ? 'var(--red)' : l.busy ? 'var(--accent)' : 'var(--green)';
+    var queue = (l.running||0)+(l.pending||0);
+    return '<div class="scard" style="text-align:left;padding:16px 18px">'
+      + '<div class="k" style="display:flex;justify-content:space-between;align-items:center">'
+      + '<span><span class="badge">LANE '+escH(l.lane)+'</span> '+escH(l.name||'')+'</span>'
+      + '<span style="color:'+stcol+';font-size:11px">'+state+'</span></div>'
+      + '<div class="v neon" style="font-size:28px">'+fmtGB(used)+'<span class="u">GB used</span></div>'
+      + '<div style="height:6px;border-radius:3px;background:rgba(255,255,255,.08);margin:8px 0 6px">'
+      + '<div style="height:100%;width:'+pct.toFixed(1)+'%;border-radius:3px;background:'+col+'"></div></div>'
+      + '<div style="color:var(--dim);font-size:12px;display:flex;gap:16px;flex-wrap:wrap">'
+      + '<span>'+fmtGB(l.vram_free)+' GB free of '+fmtGB(tot)+'</span><span>queue '+queue+'</span></div>'
+      + '<div style="font-size:12px;margin-top:6px;display:flex;gap:16px;flex-wrap:wrap">'
+      + '<span style="color:var(--accent2)">peak while rendering <b>'
+      + (l.peak_busy!=null?fmtGB(l.peak_busy)+' GB':'-')+'</b></span>'
+      + '<span style="color:var(--dim)">peak any '+fmtGB(l.peak_used)+' GB</span></div>'
+      + '<div style="margin-top:10px"><a href="'+escH(l.url)+'" target="_blank" rel="noopener" '
+      + 'style="color:var(--accent);font-size:13px;text-decoration:none">open UI &nbsp;'
+      + escH((l.url||'').replace('http://',''))+' &rarr;</a></div>'
+      + '<div style="color:var(--dim);font-size:11px;margin-top:4px">'+escH(l.host||'')
+      + (l.version?' \u00b7 v'+escH(l.version):'')+'</div></div>';
+  }).join('');
+}
+async function tickComfy(){
+  try{
+    const r = await fetch('/api/comfy',{cache:'no-store'});
+    const lanes = (await r.json()).lanes||[];
+    document.getElementById('mod-video').hidden = lanes.length===0;
+    if(lanes.length) document.getElementById('comfy-grid').innerHTML = renderComfy(lanes);
+  }catch(e){}
+}
+tickComfy();
+setInterval(tickComfy, 5000);
+
+// -- Module collapse + rearrange --------------------------------------------
+// Per-browser layout in localStorage; the server stays stateless. A saved
+// order lists data-mod keys: unknown keys are ignored and a module missing
+// from the saved order keeps its place, so adding a panel later never
+// strands it off-screen.
+const LS_ORDER='fleet.modOrder', LS_COLLAPSED='fleet.modCollapsed';
+const modBox=document.getElementById('modules');
+function mods(){ return [].slice.call(modBox.querySelectorAll(':scope > .mod')); }
+function findMod(id){
+  return modBox.querySelector(':scope > .mod[data-mod="'+CSS.escape(id)+'"]');
+}
+function saveOrder(){
+  try{ localStorage.setItem(LS_ORDER, JSON.stringify(mods().map(m=>m.dataset.mod))); }catch(e){}
+}
+function saveCollapsed(){
+  try{ localStorage.setItem(LS_COLLAPSED,
+    JSON.stringify(mods().filter(m=>m.classList.contains('collapsed')).map(m=>m.dataset.mod))); }catch(e){}
+}
+function restore(key, fn){
+  let ids; try{ ids=JSON.parse(localStorage.getItem(key)||'null'); }catch(e){}
+  if(Array.isArray(ids)) ids.forEach(id=>{ const el=findMod(id); if(el) fn(el); });
+}
+function syncExpandBtn(){
+  document.getElementById('expand-btn').innerHTML =
+    mods().some(m=>m.classList.contains('collapsed')) ? '&#9776; EXPAND ALL' : '&#9776; COLLAPSE ALL';
+}
+modBox.addEventListener('click', ev=>{
+  const bar = ev.target.closest('.modbar');
+  if(!bar || document.body.classList.contains('rearranging')) return;
+  bar.parentElement.classList.toggle('collapsed');
+  saveCollapsed(); syncExpandBtn();
+});
+document.getElementById('expand-btn').addEventListener('click', ()=>{
+  const any = mods().some(m=>m.classList.contains('collapsed'));
+  mods().forEach(m=>m.classList.toggle('collapsed', !any));
+  saveCollapsed(); syncExpandBtn();
+});
+let dragEl=null;
+const rearrangeBtn=document.getElementById('rearrange-btn');
+rearrangeBtn.addEventListener('click', ()=>{
+  const on = document.body.classList.toggle('rearranging');
+  rearrangeBtn.classList.toggle('active', on);
+  rearrangeBtn.innerHTML = on ? '&#10003; DONE' : '&#8645; REARRANGE';
+  mods().forEach(m=>{ m.draggable = on; });
+});
+modBox.addEventListener('dragstart', ev=>{
+  const m=ev.target.closest('.mod'); if(!m) return;
+  dragEl=m; m.classList.add('dragging');
+  ev.dataTransfer.effectAllowed='move';
+  ev.dataTransfer.setData('text/plain', m.dataset.mod);
+});
+modBox.addEventListener('dragend', ()=>{
+  if(dragEl) dragEl.classList.remove('dragging');
+  modBox.querySelectorAll('.drop-target').forEach(e=>e.classList.remove('drop-target'));
+  dragEl=null; saveOrder();
+});
+modBox.addEventListener('dragover', ev=>{
+  if(!dragEl) return;
+  ev.preventDefault(); ev.dataTransfer.dropEffect='move';
+  const over=ev.target.closest('.mod');
+  if(!over || over===dragEl) return;
+  modBox.querySelectorAll('.drop-target').forEach(e=>e.classList.remove('drop-target'));
+  over.classList.add('drop-target');
+  const r=over.getBoundingClientRect();
+  modBox.insertBefore(dragEl, ev.clientY > r.top + r.height/2 ? over.nextSibling : over);
+});
+modBox.addEventListener('drop', ev=>ev.preventDefault());
+restore(LS_ORDER, el=>modBox.appendChild(el));
+restore(LS_COLLAPSED, el=>el.classList.add('collapsed'));
+syncExpandBtn();
 </script>
 </body>
 </html>"""
