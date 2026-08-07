@@ -975,24 +975,76 @@ PAGE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root{
-    /* Burnt-orange on scorched brown. Neutrals carry a warm/brown bias so
-       nothing reads as generic grey beside the accent. Semantic green/yellow/
-       red stay clearly separate in hue from the orange accent, so a warning
-       pill is never mistaken for an accent. */
+    /* Burnt-orange on scorched brown. The neutrals carry a red/brown bias on
+       purpose so nothing reads as generic grey next to the orange. Semantic
+       green/yellow/red stay clearly separate in hue from the accent so a
+       warning pill never gets mistaken for an accent. */
     --bg:#0c0805; --bg2:#150e08; --card:rgba(40,27,17,0.62); --border:rgba(224,132,42,0.20);
     --txt:#f7f1ea; --dim:#a6907c; --accent:#ff7a1a; --accent2:#ffb454;
     --green:#5ec46a; --yellow:#f0c419; --red:#ff5347;
     --display:'Futura','Avenir Next Condensed','Oswald','Segoe UI',sans-serif;
     --mono:'SF Mono','Menlo','JetBrains Mono',ui-monospace,monospace;
+    /* Themeable extras. --accent-rgb exists so every rgba() tint follows the
+       accent instead of hard-coding orange; --on-accent is the text colour that
+       sits ON a filled accent button, which has to flip on light themes. */
+    --accent-rgb:255,122,26; --on-accent:#1a0d04;
+    --glow1:rgba(255,122,26,0.13); --glow2:rgba(140,60,20,0.16);
+    --grad-a:#0a0603; --grad-b:#140d07;
+  }
+
+  /* ── Themes ──────────────────────────────────────────────────────────────
+     Sunset is :root above (the default). Each theme below only redefines
+     tokens, never component rules, so a new theme cannot break layout. */
+
+  /* BREEZE — the cool blue original, rebuilt from scratch: the pre-Sunset CSS
+     is not in any commit, so this is a reconstruction, not a restoration. */
+  :root[data-theme="breeze"]{
+    --bg:#06090f; --bg2:#0b1220; --card:rgba(18,30,48,0.62); --border:rgba(90,170,255,0.20);
+    --txt:#eaf2fb; --dim:#8296ad; --accent:#38bdf8; --accent2:#7dd3fc;
+    --green:#4ade80; --yellow:#fbbf24; --red:#f87171;
+    --accent-rgb:56,189,248; --on-accent:#04121d;
+    --glow1:rgba(56,189,248,0.13); --glow2:rgba(30,80,160,0.18);
+    --grad-a:#04070d; --grad-b:#0a111e;
+  }
+  /* LIGHT — inverted. Neutrals carry a slight cool bias so white cards on a
+     white page still separate, and the accent darkens to stay legible. */
+  :root[data-theme="light"]{
+    --bg:#f4f6f9; --bg2:#ffffff; --card:rgba(255,255,255,0.86); --border:rgba(15,35,60,0.14);
+    --txt:#14202e; --dim:#5b6b7d; --accent:#0b6fd4; --accent2:#2f92f0;
+    --green:#17914a; --yellow:#a86a00; --red:#cc2b2b;
+    --accent-rgb:11,111,212; --on-accent:#ffffff;
+    --glow1:rgba(11,111,212,0.07); --glow2:rgba(120,150,190,0.10);
+    --grad-a:#eef2f7; --grad-b:#ffffff;
+  }
+  /* DARK — true neutral black. The accent goes silver so the UI reads as
+     monochrome; semantic green/yellow/red stay saturated to carry all state. */
+  :root[data-theme="dark"]{
+    --bg:#050505; --bg2:#0e0e0e; --card:rgba(26,26,26,0.66); --border:rgba(255,255,255,0.13);
+    --txt:#f2f2f2; --dim:#8c8c8c; --accent:#e6e6e6; --accent2:#b3b3b3;
+    --green:#5ec46a; --yellow:#f0c419; --red:#ff5347;
+    --accent-rgb:230,230,230; --on-accent:#0a0a0a;
+    --glow1:rgba(255,255,255,0.05); --glow2:rgba(255,255,255,0.03);
+    --grad-a:#000000; --grad-b:#0d0d0d;
+  }
+  /* MATRIX — phosphor green on black, and the display face drops to mono so
+     the headings read like a terminal rather than a poster. */
+  :root[data-theme="matrix"]{
+    --bg:#000000; --bg2:#04120a; --card:rgba(6,26,15,0.66); --border:rgba(0,255,102,0.22);
+    --txt:#ccffdd; --dim:#58a97a; --accent:#00ff66; --accent2:#7dffb0;
+    --green:#00ff66; --yellow:#d7ff5a; --red:#ff4d4d;
+    --accent-rgb:0,255,102; --on-accent:#001b0c;
+    --glow1:rgba(0,255,102,0.10); --glow2:rgba(0,120,50,0.14);
+    --grad-a:#000000; --grad-b:#031008;
+    --display:'SF Mono','Menlo','JetBrains Mono',ui-monospace,monospace;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
   body{
     font-family:'Avenir Next','SF Pro Text','Segoe UI',system-ui,sans-serif;
     background:
-      radial-gradient(1100px 600px at 12% -10%, rgba(255,122,26,0.13), transparent 60%),
-      radial-gradient(900px 500px at 90% 0%, rgba(140,60,20,0.16), transparent 60%),
-      linear-gradient(160deg,#0a0603 0%,#140d07 100%);
+      radial-gradient(1100px 600px at 12% -10%, var(--glow1), transparent 60%),
+      radial-gradient(900px 500px at 90% 0%, var(--glow2), transparent 60%),
+      linear-gradient(160deg,var(--grad-a) 0%,var(--grad-b) 100%);
     color:var(--txt); min-height:100vh; padding:24px 32px 60px;
     letter-spacing:0.01em;
   }
@@ -1044,7 +1096,7 @@ PAGE = r"""<!DOCTYPE html>
     font-size:12px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;
     color:var(--accent2);padding:6px 8px;margin:6px 0 2px -8px;border-radius:8px;
     transition:background .15s}
-  .modbar:hover{background:rgba(255,122,26,0.07)}
+  .modbar:hover{background:rgba(var(--accent-rgb),0.07)}
   .modbar .chev{display:inline-block;transition:transform .18s;font-size:11px;opacity:.85}
   .modbar .ln{flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
   .modbar .grip{display:none;cursor:grab;letter-spacing:-2px;color:var(--accent);
@@ -1053,21 +1105,21 @@ PAGE = r"""<!DOCTYPE html>
   .mod.collapsed .mod-body{display:none}
   .mod.collapsed .modbar{opacity:.72}
 
-  .ctl{font-family:var(--display);background:rgba(255,122,26,0.10);color:var(--accent);
-    border:1px solid rgba(255,122,26,0.34);border-radius:8px;padding:6px 12px;
+  .ctl{font-family:var(--display);background:rgba(var(--accent-rgb),0.10);color:var(--accent);
+    border:1px solid rgba(var(--accent-rgb),0.34);border-radius:8px;padding:6px 12px;
     font-size:11px;font-weight:700;letter-spacing:0.1em;cursor:pointer;
     transition:background .15s,color .15s}
-  .ctl:hover{background:rgba(255,122,26,0.20)}
+  .ctl:hover{background:rgba(var(--accent-rgb),0.20)}
   .ctl:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .ctl.active{background:var(--accent);color:#1a0d04;border-color:var(--accent)}
+  .ctl.active{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 
-  body.rearranging .mod{border:1px dashed rgba(255,122,26,0.45);border-radius:12px;
-    padding:8px 10px;margin-bottom:12px;background:rgba(255,122,26,0.03)}
+  body.rearranging .mod{border:1px dashed rgba(var(--accent-rgb),0.45);border-radius:12px;
+    padding:8px 10px;margin-bottom:12px;background:rgba(var(--accent-rgb),0.03)}
   body.rearranging .modbar .grip{display:inline-block}
   body.rearranging .modbar{cursor:grab}
   body.rearranging .mod.dragging{opacity:.45}
   body.rearranging .mod.drop-target{border-color:var(--accent);
-    box-shadow:0 0 0 2px rgba(255,122,26,0.3)}
+    box-shadow:0 0 0 2px rgba(var(--accent-rgb),0.3)}
   @media (prefers-reduced-motion:reduce){ .modbar,.modbar .chev,.ctl{transition:none} }
   .section-h .badge{font-size:10px;padding:2px 8px;border-radius:8px;background:rgba(94,234,212,0.12);
     color:var(--accent);border:1px solid rgba(94,234,212,0.3);letter-spacing:0.06em}
@@ -1170,6 +1222,16 @@ PAGE = r"""<!DOCTYPE html>
     <div>updated <span class="ts" id="ts">-</span></div>
     <div style="font-size:11px;margin-top:2px" id="refreshnote">browser refresh 2.5s</div>
     <div style="margin-top:8px;display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap">
+      <div id="theme-wrap">
+        <button id="theme-btn" class="ctl" type="button" aria-haspopup="true" aria-expanded="false">&#9680; THEME</button>
+        <div id="theme-menu" role="menu" aria-label="Colour theme">
+          <button class="theme-opt" data-set="sunset" role="menuitemradio"><i style="--s1:#ff7a1a;--s2:#150e08"></i>SUNSET</button>
+          <button class="theme-opt" data-set="breeze" role="menuitemradio"><i style="--s1:#38bdf8;--s2:#0b1220"></i>BREEZE</button>
+          <button class="theme-opt" data-set="light"  role="menuitemradio"><i style="--s1:#0b6fd4;--s2:#f4f6f9"></i>LIGHT</button>
+          <button class="theme-opt" data-set="dark"   role="menuitemradio"><i style="--s1:#e6e6e6;--s2:#050505"></i>DARK</button>
+          <button class="theme-opt" data-set="matrix" role="menuitemradio"><i style="--s1:#00ff66;--s2:#000000"></i>MATRIX</button>
+        </div>
+      </div>
       <button id="rearrange-btn" class="ctl" type="button">&#8645; REARRANGE</button>
       <button id="expand-btn" class="ctl" type="button">&#9776; COLLAPSE ALL</button>
     </div>
@@ -1179,8 +1241,8 @@ PAGE = r"""<!DOCTYPE html>
 <svg width="0" height="0" style="position:absolute">
   <defs>
     <linearGradient id="sparkfill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#ff7a1a" stop-opacity="0.38"/>
-      <stop offset="100%" stop-color="#ff7a1a" stop-opacity="0"/>
+      <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.38"/>
+      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
     </linearGradient>
   </defs>
 </svg>
@@ -1531,6 +1593,44 @@ setInterval(tickComfy, 5000);
 // order lists data-mod keys: unknown keys are ignored and a module missing
 // from the saved order keeps its place, so adding a panel later never
 // strands it off-screen.
+// ── Theme picker ───────────────────────────────────────────────────────────
+// Sunset is the default and is plain :root, so an unset/corrupt value falls
+// back to it rather than to an unstyled page.
+const THEMES=['sunset','breeze','light','dark','matrix'];
+const LS_THEME='acc.theme.v1';
+function applyTheme(name){
+  const t = THEMES.includes(name) ? name : 'sunset';
+  // sunset is the base :root, so it carries no attribute at all
+  if(t==='sunset') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme',t);
+  document.querySelectorAll('.theme-opt').forEach(b=>
+    b.setAttribute('aria-checked', String(b.dataset.set===t)));
+  try{ localStorage.setItem(LS_THEME,t); }catch(e){}
+}
+(function initTheme(){
+  let t; try{ t=localStorage.getItem(LS_THEME); }catch(e){}
+  applyTheme(t||'sunset');
+})();
+const themeBtn=document.getElementById('theme-btn');
+const themeMenu=document.getElementById('theme-menu');
+function closeThemeMenu(){ themeMenu.classList.remove('open'); themeBtn.setAttribute('aria-expanded','false'); }
+themeBtn.addEventListener('click', ev=>{
+  ev.stopPropagation();
+  const open=themeMenu.classList.toggle('open');
+  themeBtn.setAttribute('aria-expanded',String(open));
+});
+themeMenu.addEventListener('click', ev=>{
+  const opt=ev.target.closest('.theme-opt');
+  if(!opt) return;
+  ev.stopPropagation();
+  applyTheme(opt.dataset.set);
+  closeThemeMenu();
+});
+document.addEventListener('click', ev=>{
+  if(!ev.target.closest('#theme-wrap')) closeThemeMenu();
+});
+document.addEventListener('keydown', ev=>{ if(ev.key==='Escape') closeThemeMenu(); });
+
 const LS_ORDER='fleet.modOrder', LS_COLLAPSED='fleet.modCollapsed';
 const modBox=document.getElementById('modules');
 function mods(){ return [].slice.call(modBox.querySelectorAll(':scope > .mod')); }
