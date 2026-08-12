@@ -191,6 +191,7 @@ def _norm_model(m, node, node_name, idx, defaults):
         "model": m.get("model"),   # optional served-alias to prefer on /v1/models
         "gpus": m.get("gpus"),      # optional human label, e.g. "GPU 0-1"
         "poll_interval": float(m.get("poll_interval", defaults["model_poll_interval"])),
+        "auth_token": m.get("auth_token"),  # optional Bearer token for gated endpoints
     }
 
 
@@ -450,11 +451,14 @@ def poll_switch(sw):
 _model_prev = {}
 
 
-def _http_get(url, timeout=6):
+def _http_get(url, timeout=6, auth_token=None):
     """Tiny stdlib GET. Returns (ok, text). Never raises (down/idle is normal)."""
     try:
         import urllib.request
-        req = urllib.request.Request(url, headers={"User-Agent": "llm-fleet-monitor"})
+        headers = {"User-Agent": "llm-fleet-monitor"}
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return True, r.read().decode("utf-8", "replace")
     except Exception:  # noqa
@@ -479,10 +483,10 @@ def _prom_parse(text):
     return out
 
 
-def _model_id(endpoint, prefer=None, timeout=6):
+def _model_id(endpoint, prefer=None, timeout=6, auth_token=None):
     """Live model id from /v1/models. If `prefer` is set and served here, use it;
     otherwise fall back to data[0].id. Empty string if unavailable."""
-    ok, body = _http_get(endpoint + "/v1/models", timeout=timeout)
+    ok, body = _http_get(endpoint + "/v1/models", timeout=timeout, auth_token=auth_token)
     if not ok:
         return ""
     try:
@@ -632,7 +636,7 @@ def poll_model(m):
         "kv_pct": None, "running": None, "waiting": None,
         "ts": time.time(), "err": None,
     }
-    ok, body = _http_get(m["endpoint"] + "/metrics", timeout=6)
+    ok, body = _http_get(m["endpoint"] + "/metrics", timeout=6, auth_token=m.get("auth_token"))
     if not ok or not body.strip():
         res["err"] = "down / no /metrics"
         return res
@@ -712,7 +716,7 @@ def poll_model(m):
     if res["ttft_ms"] is None and ttft_sum is not None and ttft_cnt and ttft_cnt > 0:
         res["ttft_ms"] = round(ttft_sum / ttft_cnt * 1000.0, 1)
 
-    mid = _model_id(m["endpoint"], prefer=m.get("model"), timeout=6)
+    mid = _model_id(m["endpoint"], prefer=m.get("model"), timeout=6, auth_token=m.get("auth_token"))
     res["model"] = mid or m["label"]
     return res
 
