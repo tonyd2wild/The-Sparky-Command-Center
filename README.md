@@ -207,3 +207,20 @@ Issues and pull requests are welcome. This is intentionally a small, single-file
 ## License
 
 [MIT](LICENSE)
+
+## 🍃 Clock ECO Mode
+
+Cap GPU clocks on any node — or the whole fleet — from the dashboard. On DGX Spark
+(GB10) boxes a 2200 MHz cap cuts GPU power ~30% and tames the notorious log-less
+thermal hard-offs, with very little decode cost (LLM decode is memory-bound). Full
+story and standalone fix: [DGX-Spark-Hard-Poweroff-Fix](https://github.com/tonyd2wild/DGX-Spark-Hard-Poweroff-Fix).
+
+- **Status** is always available: live clock / temp / watts from every configured node.
+- **Apply is disabled until you opt in**: create an `eco_key.txt` file next to
+  `server.py` containing a secret of your choice. The UI prompts for it once per
+  browser; requests without it get a 403. Keep the dashboard off the open internet
+  regardless — this button runs `sudo nvidia-smi` on your fleet.
+- Nodes need passwordless sudo for `nvidia-smi -lgc` / `-rgc`.
+- Levels: 2300 / 2200 (the proven sweet spot) / 2000 / 1800 / OFF (restore full clocks).
+- Applies instantly with **no reboot and no model restart**, and `-lgc` does not
+  survive a reboot on its own — see the fix repo for a systemd persistence unit.

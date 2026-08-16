@@ -10,3 +10,6 @@ __pycache__/
 # Editor / OS cruft
 *.bak*
 .DS_Store
+
+# Clock ECO mode write key - never commit this
+eco_key.txt

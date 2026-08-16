@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import threading
+import urllib.parse
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -231,6 +232,64 @@ def _num(v):
         return float(v)
     except Exception:
         return None
+
+
+# ----------------------------------------------------------------------------
+# Clock ECO mode (optional): cap GPU clocks per node or fleet-wide over SSH.
+# Useful on DGX Spark / GB10 boxes, where a clock cap tames thermal hard-offs
+# and cuts power ~30% with little decode cost (LLM decode is memory-bound).
+# See https://github.com/tonyd2wild/DGX-Spark-Hard-Poweroff-Fix for the story.
+#
+# Writes are DISABLED until you create an `eco_key.txt` file next to server.py
+# containing a secret of your choice; the UI asks for it once per browser.
+# Status reads are always available. Nodes need passwordless sudo for
+# `nvidia-smi -lgc` / `-rgc` (or run the dashboard as a user that has it).
+# ----------------------------------------------------------------------------
+ECO_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eco_key.txt")
+ECO_LEVELS = {"2300": "0,2300", "2200": "0,2200", "2000": "0,2000", "1800": "0,1800"}
+
+
+def _eco_ssh(node, remote_cmd, timeout=25):
+    argv = ["ssh"] + _ssh_flags(node) + [f"{node['user']}@{node['host']}", remote_cmd]
+    rc, out, err = _run(argv, timeout=timeout)
+    return (out or err or "").strip()
+
+
+def _eco_key_ok(supplied):
+    try:
+        want = open(ECO_KEY_FILE).read().strip()
+    except Exception:
+        return False
+    return bool(want) and (supplied or "").strip() == want
+
+
+def eco_status():
+    out = {}
+
+    def one(n):
+        v = _eco_ssh(n, "nvidia-smi --query-gpu=clocks.gr,temperature.gpu,power.draw "
+                        "--format=csv,noheader 2>/dev/null", timeout=20)
+        out[n["key"]] = v.split("\n")[0][:60] if v else "no reply"
+
+    ts = [threading.Thread(target=one, args=(n,)) for n in CFG["nodes"]]
+    [t.start() for t in ts]
+    [t.join(28) for t in ts]
+    return out
+
+
+def eco_set(node_key, level):
+    cmd = ("sudo nvidia-smi -rgc" if level == "off"
+           else "sudo nvidia-smi -lgc " + ECO_LEVELS[level])
+    targets = CFG["nodes"] if node_key == "fleet" else [n for n in CFG["nodes"] if n["key"] == node_key]
+    out = {}
+
+    def one(n):
+        out[n["key"]] = (_eco_ssh(n, cmd, timeout=30) or "ok")[:120]
+
+    ts = [threading.Thread(target=one, args=(n,)) for n in targets]
+    [t.start() for t in ts]
+    [t.join(35) for t in ts]
+    return out, bool(targets)
 
 
 # ----------------------------------------------------------------------------
@@ -964,6 +1023,27 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             self._send(200, "ok", "text/plain")
             return
+        if self.path.startswith("/api/eco-status"):
+            self._send(200, json.dumps({"status": eco_status(),
+                                        "writes_enabled": os.path.exists(ECO_KEY_FILE)}),
+                       "application/json")
+            return
+        if self.path.startswith("/api/eco-set"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if not _eco_key_ok(q.get("key", [""])[0]):
+                self._send(403, json.dumps({"ok": False, "error": "bad or missing key (create eco_key.txt to enable writes)"}), "application/json")
+                return
+            level = q.get("level", [""])[0]
+            node = q.get("node", ["fleet"])[0]
+            if level != "off" and level not in ECO_LEVELS:
+                self._send(400, json.dumps({"ok": False, "error": "bad level"}), "application/json")
+                return
+            out, found = eco_set(node, level)
+            if not found:
+                self._send(400, json.dumps({"ok": False, "error": "bad node"}), "application/json")
+                return
+            self._send(200, json.dumps({"ok": True, "applied": level, "nodes": out}), "application/json")
+            return
         self._send(200, PAGE)
 
 
@@ -1250,6 +1330,27 @@ PAGE = r"""<!DOCTYPE html>
 <div class="summary" id="summary"></div>
 
 <div id="modules">
+  <section class="mod" data-mod="eco">
+    <div class="modbar"><span class="grip">&#8942;&#8942;</span><span class="chev">&#9662;</span>&#127811; Clock ECO Mode<span class="ln"></span></div>
+    <div class="mod-body">
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:6px 2px">
+        <label style="display:flex;gap:6px;align-items:center">Node
+          <select id="eco-node"><option value="fleet">&#127760; WHOLE FLEET</option></select></label>
+        <label style="display:flex;gap:6px;align-items:center">Level
+          <select id="eco-level">
+            <option value="2200" selected>&#127811; ECO 2200 MHz</option>
+            <option value="2300">ECO 2300 MHz (light)</option>
+            <option value="2000">&#127811;&#127811; ECO 2000 MHz</option>
+            <option value="1800">&#127811;&#127811;&#127811; ECO 1800 MHz (deep saver)</option>
+            <option value="off">&#9940; OFF (full clocks)</option>
+          </select></label>
+        <button id="eco-apply">&#127811; Apply</button>
+        <button id="eco-check">&#128260; Status</button>
+        <a href="https://github.com/tonyd2wild/DGX-Spark-Hard-Poweroff-Fix" target="_blank" style="font-size:12px;opacity:.7">why?</a>
+        <div id="eco-out" style="flex-basis:100%;white-space:pre-line;font-family:monospace;font-size:12px;opacity:.8"></div>
+      </div>
+    </div>
+  </section>
   <section class="mod" data-mod="tokens">
     <div class="modbar"><span class="grip">&#8942;&#8942;</span><span class="chev">&#9662;</span>Token Tracker<span class="ln"></span></div>
     <div class="mod-body"><div id="token-tracker"></div></div>
@@ -1696,6 +1797,35 @@ modBox.addEventListener('drop', ev=>ev.preventDefault());
 restore(LS_ORDER, el=>modBox.appendChild(el));
 restore(LS_COLLAPSED, el=>el.classList.add('collapsed'));
 syncExpandBtn();
+// --- Clock ECO Mode -------------------------------------------------------
+(function(){
+  const out=document.getElementById('eco-out');
+  const nodeSel=document.getElementById('eco-node');
+  fetch('/api/metrics').then(r=>r.json()).then(d=>{
+    (d.nodes||[]).forEach(n=>{
+      const o=document.createElement('option');o.value=n.key;o.textContent=n.name;nodeSel.appendChild(o);
+    });
+  }).catch(()=>{});
+  document.getElementById('eco-check').onclick=async()=>{
+    out.textContent='reading clocks on all nodes…';
+    try{const r=await fetch('/api/eco-status');const d=await r.json();
+      out.textContent=Object.entries(d.status).map(([n,v])=>n.toUpperCase()+':  '+v).join('\n')
+        +(d.writes_enabled?'':'\n(writes disabled — create eco_key.txt next to server.py to enable Apply)');
+    }catch(e){out.textContent='status failed: '+e;}
+  };
+  document.getElementById('eco-apply').onclick=async()=>{
+    let key=localStorage.getItem('ecoKey');
+    if(!key){key=prompt('ECO control key (contents of eco_key.txt):')||'';if(key)localStorage.setItem('ecoKey',key);}
+    const node=nodeSel.value, lvl=document.getElementById('eco-level').value;
+    if(node==='fleet'&&!confirm('Apply '+lvl+' to the WHOLE fleet?'))return;
+    out.textContent='applying '+lvl+' to '+node+'…';
+    try{const r=await fetch('/api/eco-set?node='+node+'&level='+lvl+'&key='+encodeURIComponent(key));
+      const d=await r.json();
+      if(!d.ok){out.textContent='blocked: '+d.error;if((d.error||'').includes('key'))localStorage.removeItem('ecoKey');return;}
+      out.textContent='applied '+d.applied+'\n'+Object.entries(d.nodes).map(([n,v])=>n.toUpperCase()+':  '+(v||'ok')).join('\n');
+    }catch(e){out.textContent='apply failed: '+e;}
+  };
+})();
 </script>
 </body>
 </html>"""
