@@ -96,6 +96,24 @@ def load_config(path=None):
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
+    # Expand ${VAR} placeholders from the environment (e.g. auth tokens).
+    # Leaves unknown vars as-is rather than failing — configs must stay runnable
+    # on hosts that don't export every secret.
+    def _expand(obj):
+        if isinstance(obj, str):
+            return re.sub(
+                r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+                lambda m: os.environ.get(m.group(1), m.group(0)),
+                obj,
+            )
+        if isinstance(obj, dict):
+            return {k: _expand(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_expand(v) for v in obj]
+        return obj
+
+    raw = _expand(raw)
+
     cfg = {
         "server": _deep_merge(DEFAULTS["server"], raw.get("server")),
         "ssh": _deep_merge(DEFAULTS["ssh"], raw.get("ssh")),
