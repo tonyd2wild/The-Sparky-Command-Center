@@ -8,7 +8,7 @@ Point it at your own hardware with a single `config.json`. No database, no build
 
 ## Features
 
-- **Fleet at a glance** — one page with a summary strip (online GPUs, total power draw, hottest GPU, overall fleet status).
+- **Fleet at a glance** — one page with a summary strip (online GPUs, total power draw, hottest GPU, and thermal/reachability-aware fleet status).
 - **Per-GPU hardware metrics** — temperature, power draw and % of cap, utilization, VRAM used/total, fan speed, and graphics clock, with a live temperature sparkline per GPU.
 - **Per-node system metrics** — host temperature (AMD `k10temp`, Intel `coretemp`, ARM `cpu_thermal`, ACPI `acpitz`, and more), extra thermal sensors, and system RAM. Works for DGX Sparks and any other Linux GPU host.
 - **Per-model inference metrics** — decode tok/s, prefill tok/s, TTFT, KV-cache usage, and running/waiting request counts, scraped from each model's Prometheus `/metrics`. Works with **vLLM** and **llama.cpp** servers.

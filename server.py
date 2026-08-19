@@ -986,16 +986,51 @@ def snapshot():
     gpu_count = 0
     total_power = 0.0
     hottest = {"unit": None, "temp": -1}
-    all_ok = True
+    severity = {"ok": 0, "warning": 1, "degraded": 2, "hot": 3}
+    fleet_status = "ok"
+    issues = []
+
+    def promote(level, issue):
+        nonlocal fleet_status
+        if severity[level] > severity[fleet_status]:
+            fleet_status = level
+        issues.append(issue)
+
     for n in nodes:
         if not n.get("reachable"):
-            all_ok = False
+            promote("degraded", f"{n['name']} unreachable")
+
+        for m in n.get("models", []):
+            if not m.get("reachable"):
+                promote("degraded", f"{m['label']} unavailable")
+
         for g in n.get("gpus", []):
             gpu_count += 1
             if g.get("power"):
                 total_power += g["power"]
-            if g.get("temp") is not None and g["temp"] > hottest["temp"]:
-                hottest = {"unit": f"{n['name']} GPU{g['index']}", "temp": g["temp"]}
+            temp = g.get("temp")
+            if temp is not None:
+                unit = f"{n['name']} GPU{g['index']}"
+                if temp > hottest["temp"]:
+                    hottest = {"unit": unit, "temp": temp}
+                if temp >= n["temp_hot"]:
+                    promote("hot", f"{unit} hot ({temp:.0f} C)")
+                elif temp >= n["temp_warn"]:
+                    promote("warning", f"{unit} warm ({temp:.0f} C)")
+
+        host_temp = n.get("cpu_temp")
+        if host_temp is not None:
+            if host_temp >= n["temp_hot"] + 6:
+                promote("hot", f"{n['name']} host hot ({host_temp:.0f} C)")
+            elif host_temp >= n["temp_warn"] + 5:
+                promote("warning", f"{n['name']} host warm ({host_temp:.0f} C)")
+
+    for m in fleet_models:
+        if not m.get("reachable"):
+            promote("degraded", f"{m['label']} unavailable")
+
+    if switch and not switch.get("reachable"):
+        promote("degraded", f"{switch.get('name', 'switch')} unreachable")
 
     return {
         "ts": time.time(),
@@ -1012,7 +1047,9 @@ def snapshot():
             "total_power": round(total_power),
             "hottest_unit": hottest["unit"],
             "hottest_temp": hottest["temp"] if hottest["temp"] >= 0 else None,
-            "all_ok": all_ok,
+            "status": fleet_status,
+            "issues": issues[:8],
+            "all_ok": fleet_status == "ok",
         },
     }
 
@@ -1168,6 +1205,7 @@ PAGE = r"""<!DOCTYPE html>
   }
   .pulse{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--green);
          box-shadow:0 0 12px var(--green);margin-right:8px;animation:p 2s infinite}
+  .pulse.warn{background:var(--yellow);box-shadow:0 0 12px var(--yellow)}
   .pulse.bad{background:var(--red);box-shadow:0 0 12px var(--red)}
   @keyframes p{0%,100%{opacity:1}50%{opacity:0.4}}
   .meta{font-size:13px;color:var(--dim);text-align:right;line-height:1.6}
@@ -1186,6 +1224,7 @@ PAGE = r"""<!DOCTYPE html>
   .scard .v .u{font-size:14px;color:var(--dim);font-weight:600;margin-left:4px}
   .scard .v.neon{color:var(--accent)} .scard .v.violet{color:var(--accent2)}
   .scard .v.red{color:var(--red)} .scard .v.green{color:var(--green)}
+  .scard .v.yellow{color:var(--yellow)}
 
   .section-h{font-size:13px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;
     color:var(--accent2);margin:8px 0 14px;display:flex;align-items:center;gap:10px}
@@ -1626,13 +1665,21 @@ function render(s){
     document.getElementById('refreshnote').textContent = 'browser refresh '+(s.browser_refresh_ms/1000)+'s';
   }
   const agg = s.agg||{};
-  document.getElementById('pulse').className = 'pulse' + (agg.all_ok? '':' bad');
+  const fleetStatus = agg.status || (agg.all_ok ? 'ok' : 'degraded');
+  const statusUi = {
+    ok:       {label:'ALL OK',   color:'green',  pulse:''},
+    warning:  {label:'WARNING',  color:'yellow', pulse:' warn'},
+    hot:      {label:'HOT',      color:'red',    pulse:' bad'},
+    degraded: {label:'DEGRADED', color:'red',    pulse:' bad'}
+  }[fleetStatus] || {label:'DEGRADED', color:'red', pulse:' bad'};
+  document.getElementById('pulse').className = 'pulse' + statusUi.pulse;
+  const issueTitle = escH((agg.issues||[]).join(' · '));
 
   document.getElementById('summary').innerHTML = `
     <div class="scard"><div class="k">Fleet GPUs</div><div class="v neon">${agg.gpu_count!=null?agg.gpu_count:'-'}<span class="u">online</span></div></div>
     <div class="scard"><div class="k">Total Power Draw</div><div class="v violet">${agg.total_power!=null?agg.total_power:'-'}<span class="u">W</span></div></div>
     <div class="scard"><div class="k">Hottest GPU</div><div class="v ${agg.hottest_temp>=84?'red':'green'}" style="font-size:22px">${escH(agg.hottest_unit||'-')}<span class="u">${agg.hottest_temp!=null?agg.hottest_temp.toFixed(0)+'°C':''}</span></div></div>
-    <div class="scard"><div class="k">Fleet Status</div><div class="v ${agg.all_ok?'green':'red'}" style="font-size:22px">${agg.all_ok?'● ALL OK':'● DEGRADED'}</div></div>`;
+    <div class="scard" title="${issueTitle}"><div class="k">Fleet Status</div><div class="v ${statusUi.color}" style="font-size:22px">● ${statusUi.label}</div></div>`;
 
   document.getElementById('token-tracker').innerHTML = renderTokens(s.tokens);
 
