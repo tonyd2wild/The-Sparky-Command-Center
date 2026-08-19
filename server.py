@@ -334,7 +334,13 @@ def _ssh_flags(node):
     optional port, optional ProxyJump bastion. Flags must be SEPARATE argv items."""
     flags = ["-i", node["ssh_key"], "-o", f"ConnectTimeout={CFG['ssh']['connect_timeout']}"]
     for k, v in (CFG["ssh"].get("options") or {}).items():
-        flags += ["-o", f"{k}={v}"]
+        # Value prefixed with @ is a RAW flag (e.g. "@-F /path" -> -F /path),
+        # not an -o Key=Value. Split on whitespace so each token is its own
+        # argv item. Lets deployments point ssh at a specific config file.
+        if isinstance(v, str) and v.startswith("@"):
+            flags += v[1:].split()
+        else:
+            flags += ["-o", f"{k}={v}"]
     if node.get("port"):
         flags += ["-p", str(node["port"])]
     if node.get("jump_host"):
