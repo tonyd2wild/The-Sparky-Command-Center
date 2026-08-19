@@ -10,7 +10,7 @@ Point it at your own hardware with a single `config.json`. No database, no build
 
 - **Fleet at a glance** — one page with a summary strip (online GPUs, total power draw, hottest GPU, overall fleet status).
 - **Per-GPU hardware metrics** — temperature, power draw and % of cap, utilization, VRAM used/total, fan speed, and graphics clock, with a live temperature sparkline per GPU.
-- **Per-node system metrics** — CPU temperature (AMD `k10temp`, Intel `coretemp`, ARM `cpu_thermal`, and more), extra CPU sensors, and system RAM. Works for DGX Sparks and any other Linux GPU host.
+- **Per-node system metrics** — host temperature (AMD `k10temp`, Intel `coretemp`, ARM `cpu_thermal`, ACPI `acpitz`, and more), extra thermal sensors, and system RAM. Works for DGX Sparks and any other Linux GPU host.
 - **Per-model inference metrics** — decode tok/s, prefill tok/s, TTFT, KV-cache usage, and running/waiting request counts, scraped from each model's Prometheus `/metrics`. Works with **vLLM** and **llama.cpp** servers.
 - **Multiple instances, side by side** — run more than one model shape on a node, *or* run two instances across the fleet, and each gets its own perf card (separate decode / prefill / TTFT / KV).
 - **Cumulative token tracker** — a **Token Tracker** panel (and a `/api/tokens` endpoint) showing total tokens served per model, split into prompt vs generated, plus a per-day bucket. It banks the same `/metrics` token counters the perf cards already read, so a model-server restart (which zeroes those counters) never wipes your running history. Works out of the box for every configured model; toggle with `server.token_tracking`.
@@ -30,7 +30,7 @@ Point it at your own hardware with a single `config.json`. No database, no build
 
 - **Python 3.8+** on the machine that runs the dashboard.
 - **SSH access** from that machine to each node (key-based; the key should log in without a password prompt). The nodes are expected to be Linux.
-- **`nvidia-smi`** on each GPU node (ships with the NVIDIA driver). CPU temps come from `hwmon` under `/sys/class/hwmon` and system RAM from `free`.
+- **`nvidia-smi`** on each GPU node (ships with the NVIDIA driver). Host temperatures come from `hwmon` under `/sys/class/hwmon` and system RAM from `free` (queried with a stable C locale).
 - **Optional:** a vLLM or llama.cpp server per model, exposing Prometheus `/metrics` and OpenAI-style `/v1/models`, for the model performance cards.
 - **Optional:** a MikroTik / RouterOS fabric switch reachable over SSH, for the switch panel.
 
