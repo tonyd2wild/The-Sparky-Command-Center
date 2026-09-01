@@ -324,6 +324,12 @@ _NODE_REMOTE = (
     'for h in /sys/class/hwmon/hwmon*; do n=$(cat "$h/name" 2>/dev/null); '
     'case "$n" in k10temp|coretemp|cpu_thermal|zenpower|nct6*|acpitz) '
     'cat "$h"/temp*_input 2>/dev/null;; esac; done; '
+    # Tegra (Jetson) exposes no useful hwmon sensor and no temps at all via
+    # nvidia-smi; its sensors live in the thermal_zone subsystem instead. Emit
+    # them as "type=millidegrees", which the bare-number hwmon parsing skips.
+    'for z in /sys/devices/virtual/thermal/thermal_zone*; do '
+    't=$(cat "$z/type" 2>/dev/null); v=$(cat "$z/temp" 2>/dev/null); '
+    '[ -n "$t" ] && [ -n "$v" ] && echo "$t=$v"; done; '
     'echo PIPEMEM; '
     'LC_ALL=C free -m | awk "/^Mem:/{print \\$2, \\$3}"'
 )
@@ -392,10 +398,41 @@ def poll_node(node):
             _push_hist(f"node:{node['key']}:{idx}:temp", g["temp"])
             _push_hist(f"node:{node['key']}:{idx}:power", g["power"])
 
-        cpu_vals = [int(x) / 1000.0 for x in cpu_part.strip().splitlines() if x.strip().isdigit()]
+        cpu_lines = [x.strip() for x in cpu_part.strip().splitlines() if x.strip()]
+        cpu_vals = [int(x) / 1000.0 for x in cpu_lines if x.isdigit()]
+
+        # thermal_zone readings, keyed by zone type ("tj-thermal", "gpu-thermal").
+        zones = {}
+        for ln in cpu_lines:
+            if "=" not in ln:
+                continue
+            zname, _, raw = ln.partition("=")
+            raw = raw.strip()
+            if raw.lstrip("-").isdigit():
+                zones[zname.strip().lower()] = int(raw) / 1000.0
+
         if cpu_vals:
             res["cpu_temps"] = sorted((round(v, 1) for v in cpu_vals), reverse=True)
             res["cpu_temp"] = res["cpu_temps"][0]
+        else:
+            # No hwmon sensor matched. Fall back to the thermal zones, preferring
+            # junction temperature: tj is the hottest on-die point and the one the
+            # SoC actually throttles against, so it is the honest CPU number.
+            for zname in ("tj-thermal", "cpu-thermal", "cpu_thermal", "cpu-therm"):
+                if zname in zones:
+                    res["cpu_temp"] = round(zones[zname], 1)
+                    res["cpu_temps"] = [res["cpu_temp"]]
+                    break
+
+        # Same story for the GPU card: an integrated Tegra GPU reports [N/A] for
+        # every nvidia-smi field, so borrow gpu-thermal. This only ever fills a
+        # gap - a real nvidia-smi reading always wins - and multi-GPU hosts are
+        # skipped, since one zone cannot be attributed to one of several cards.
+        gpu_zone = zones.get("gpu-thermal", zones.get("gpu_thermal"))
+        if gpu_zone is not None and len(res["gpus"]) == 1 and res["gpus"][0]["temp"] is None:
+            res["gpus"][0]["temp"] = round(gpu_zone, 1)
+            _push_hist("node:%s:%s:temp" % (node["key"], res["gpus"][0]["index"]),
+                       res["gpus"][0]["temp"])
 
         ml = mem_part.strip().splitlines()
         if ml:

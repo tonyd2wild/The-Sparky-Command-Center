@@ -1,0 +1,27 @@
+services:
+  sparky:
+    build: .
+    image: sparky-command-center
+    container_name: sparky-command-center
+    restart: unless-stopped
+    ports:
+      # Change the host side only. The container side must match "server.port"
+      # in config.json (8890 by default).
+      - "8890:8890"
+    volumes:
+      # Your fleet config, live-mounted so edits on the host need only a
+      # `docker compose restart`. The server only ever reads it - append `:ro`
+      # if you would rather the container could not write to it at all.
+      - ./config.json:/app/config.json:rw
+      # SSH keys used to poll the nodes. Read-only: the dashboard never writes
+      # here, and a failed known_hosts update is only a warning.
+      - ${HOME}/.ssh:/home/sparky/.ssh:ro
+      # Persistent token-usage history (server.token_store). Without this the
+      # Token Tracker restarts from zero every time the container is recreated.
+      - ./data:/app/data
+      # Uncomment to enable Clock ECO Mode writes (see README).
+      # - ./eco_key.txt:/app/eco_key.txt:ro
+
+    # The image runs as uid/gid 1000. If your host user is a different uid, the
+    # bind-mounted key will not be readable - override it to match `id -u`:
+    # user: "1001:1001"
