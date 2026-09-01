@@ -49,6 +49,8 @@ python3 server.py
 #    http://localhost:8890
 ```
 
+Prefer a container? See [Run with Docker](#run-with-docker) — `docker compose up -d`.
+
 To use a config file somewhere else, set the `CONFIG` environment variable:
 
 ```bash
@@ -62,6 +64,47 @@ ssh youruser@spark1.example.local nvidia-smi
 ```
 
 If that succeeds without prompting for a password, the dashboard will be able to poll the node.
+
+## Run with Docker
+
+The image carries only the server and its SSH client — your fleet details stay on the
+host in `config.json`, which is bind-mounted at runtime. Create that file first
+(`cp config.example.json config.json` and edit it), then pick either form.
+
+**Compose (recommended):**
+
+```bash
+docker compose up -d
+```
+
+**One line, no compose file:**
+
+```bash
+docker build -t sparky-command-center . && docker run -d --name sparky-command-center --restart unless-stopped -p 8890:8890 -v "$PWD/config.json:/app/config.json" -v "$HOME/.ssh:/home/sparky/.ssh:ro" -v "$PWD/data:/app/data" sparky-command-center
+```
+
+Either way the dashboard is on <http://localhost:8890>.
+
+| Mount | Why |
+| --- | --- |
+| `./config.json` → `/app/config.json` | Your fleet config. Edit on the host, then `docker compose restart` — no rebuild. |
+| `$HOME/.ssh` → `/home/sparky/.ssh` (read-only) | The keys used to poll the nodes. |
+| `./data` → `/app/data` | Persistent token-usage history (`server.token_store`). Drop it and the Token Tracker restarts from zero whenever the container is recreated. |
+
+Notes:
+
+- **SSH keys.** `HOME` inside the container is `/home/sparky`, so a `~/.ssh/id_ed25519`
+  path in `config.json` resolves to the mounted key — the same config file works both
+  in and out of Docker. Absolute paths work too, as long as you mount them.
+- **User id.** The container runs as uid/gid 1000 so a key from a typical single-user
+  host is readable as-is. If `id -u` gives you something else, set `user: "<uid>:<gid>"`
+  in `docker-compose.yml` (or `--user` on `docker run`). The image needs a real passwd
+  entry for whatever uid it runs as — OpenSSH refuses to start without one — so prefer
+  overriding to 1000-owned keys where you can.
+- **Port.** The published port's container side must match `server.port` in
+  `config.json`; change the host side freely (`- "9100:8890"`).
+- **Rebuild after pulling changes:** `docker compose up -d --build`.
+- **Logs:** `docker compose logs -f`.
 
 ## Configuration
 

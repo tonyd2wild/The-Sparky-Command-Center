@@ -1,0 +1,18 @@
+# Everything the image does not need. config.json is bind-mounted at runtime and
+# must never be baked into an image - it holds real hostnames and key paths.
+config.json
+data/
+eco_key.txt
+.git/
+.github/
+__pycache__/
+*.pyc
+*.log
+*.bak*
+.DS_Store
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile*
+README.md
+LICENSE
+tests/
