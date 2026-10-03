@@ -59,7 +59,9 @@ DEFAULTS = {
                     "StrictHostKeyChecking": "accept-new"},
     },
     "defaults": {"poll_interval": 7.0, "model_poll_interval": 6.0,
-                 "temp_warn": 70, "temp_hot": 84, "stale_after_s": 20},
+                 "temp_warn": 70, "temp_hot": 84, "stale_after_s": 20,
+                 # unified-memory nodes: warn / critical when MemAvailable drops below (GiB)
+                 "mem_warn_gib": 8, "mem_crit_gib": 4},
     "nodes": [],
     "sections": [],
     "switch": None,
@@ -332,7 +334,7 @@ def poll_unified(node):
         "key": node["key"], "name": node.get("name", node["key"]), "profile": "unified",
         "node_id": node.get("node_id"), "rank": node.get("rank"), "reachable": False,
         "temp": None, "power": None, "util": None, "sm_clock": None,
-        "mem_total_gib": None, "mem_used_gib": None, "mem_pct": None,
+        "mem_total_gib": None, "mem_used_gib": None, "mem_pct": None, "mem_avail_gib": None,
         "model_gib": None, "model": node.get("serving"), "pair": node.get("pair"),
         "ts": time.time(), "err": None,
     }
@@ -364,6 +366,8 @@ def poll_unified(node):
             res["mem_total_gib"] = round(tot_kb / 1048576.0, 1)
             res["mem_used_gib"] = round(used_kb / 1048576.0, 1)
             res["mem_pct"] = round(used_kb / tot_kb * 100.0, 1)
+            if avail_kb is not None:
+                res["mem_avail_gib"] = round(avail_kb / 1048576.0, 1)
         app_mib = _num(app_part.strip().splitlines()[0]) if app_part.strip() else None
         if app_mib is not None:
             res["model_gib"] = round(app_mib / 1024.0, 1)
@@ -911,6 +915,19 @@ def start_pollers():
         threading.Thread(target=_tok_loop, daemon=True).start()
 
 
+def _mem_state(s, ncfg, sd):
+    """ok / warn / crit from MemAvailable on a unified-memory node (GPU and OS share one
+    pool, so running out on one rank stalls the whole job); None when not measured."""
+    avail = s.get("mem_avail_gib")
+    if not s.get("reachable") or avail is None:
+        return None
+    crit = _num(ncfg.get("mem_crit_gib", sd["mem_crit_gib"]))
+    warn = _num(ncfg.get("mem_warn_gib", sd["mem_warn_gib"]))
+    crit = DEFAULTS["defaults"]["mem_crit_gib"] if crit is None else crit
+    warn = DEFAULTS["defaults"]["mem_warn_gib"] if warn is None else warn
+    return "crit" if avail < crit else "warn" if avail < warn else "ok"
+
+
 def snapshot():
     with _lock:
         nodes = [dict(STATE["nodes"][n["key"]]) for n in NODES]
@@ -922,8 +939,11 @@ def snapshot():
     discrete = [x for x in nodes if x.get("profile") != "unified"]
     gpu_count = len([s for s in unified if s.get("reachable")]) + sum(len(b.get("gpus") or []) for b in discrete)
     total_power, hottest, all_ok = 0.0, {"unit": None, "temp": -1}, True
-    down = []
+    down, low_mem = [], []
     for s in unified:
+        s["mem_state"] = _mem_state(s, NODE_BY_KEY.get(s.get("key"), {}), sd)
+        if s["mem_state"] in ("warn", "crit"):
+            low_mem.append(s["name"])
         if s.get("reachable"):
             total_power += s.get("power") or 0
             if s.get("temp") is not None and s["temp"] > hottest["temp"]:
@@ -973,9 +993,10 @@ def snapshot():
         "agg": {"gpu_count": gpu_count, "total_power": round(total_power),
                 "hottest_unit": hottest["unit"],
                 "hottest_temp": hottest["temp"] if hottest["temp"] >= 0 else None,
-                "all_ok": all_ok, "down": down},
+                "all_ok": all_ok, "down": down, "low_mem": low_mem},
         "thresholds": {"temp_warn": sd["temp_warn"], "temp_hot": sd["temp_hot"],
-                       "stale_after_s": sd["stale_after_s"]},
+                       "stale_after_s": sd["stale_after_s"],
+                       "mem_warn_gib": sd["mem_warn_gib"], "mem_crit_gib": sd["mem_crit_gib"]},
     }
 
 
@@ -1088,16 +1109,20 @@ def fleet_context():
                  % ("ALL OK" if agg["all_ok"] else "DEGRADED (down: %s)" % ", ".join(agg["down"]),
                     agg["gpu_count"], agg["total_power"], agg["hottest_unit"] or "n/a",
                     "%.0f" % agg["hottest_temp"] if agg["hottest_temp"] is not None else "n/a"))
+    if agg.get("low_mem"):
+        lines.append("LOW MEMORY (unified pool nearly full): %s." % ", ".join(agg["low_mem"]))
     for n in s["nodes"]:
         if not n.get("reachable"):
             lines.append("- NODE %s: UNREACHABLE (%s), last good poll %ss ago."
                          % (n["name"], n.get("err") or "no response", _age(n.get("ts"))))
             continue
         if n.get("profile") == "unified":
-            lines.append("- NODE %s (unified-memory GPU%s): %s C, %s W, util %s%%, SM %s MHz, memory %s/%s GiB (%s%%), model resident %s GiB, serving %s%s."
+            lines.append("- NODE %s (unified-memory GPU%s): %s C, %s W, util %s%%, SM %s MHz, memory %s/%s GiB (%s%%, %s GiB available%s), model resident %s GiB, serving %s%s."
                          % (n["name"], ", " + n["node_id"] if n.get("node_id") else "",
                             n.get("temp"), n.get("power"), n.get("util"), n.get("sm_clock"),
                             n.get("mem_used_gib"), n.get("mem_total_gib"), n.get("mem_pct"),
+                            n.get("mem_avail_gib"),
+                            {"warn": ", LOW", "crit": ", CRITICALLY LOW"}.get(n.get("mem_state"), ""),
                             n.get("model_gib"), n.get("model") or "nothing",
                             " (%s)" % n["pair"] if n.get("pair") else ""))
         else:

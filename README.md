@@ -116,7 +116,9 @@ No other change is needed. The dashboard still adds its live-data context as the
 | `jump` | Optional. `{"user", "host", "mode": "proxy"}` uses `ssh -J`. `"mode": "nested"` runs `ssh` from the jump host itself, for LAN nodes that only trust the jump host's key. |
 | `node_id`, `rank`, `serving`, `pair` | Unified nodes: labels on the card (what the node is serving and its role). |
 | `badge`, `list_containers`, `containers` | Discrete hosts: card badge, whether to list `docker ps` names, and friendly labels per container name. |
-| `temp_warn`, `temp_hot`, `poll_interval` | Per-node overrides of `defaults`. |
+| `temp_warn`, `temp_hot`, `mem_warn_gib`, `mem_crit_gib`, `poll_interval` | Per-node overrides of `defaults`. |
+
+Unified-memory nodes also get a memory headroom state from `MemAvailable`: `warn` below `mem_warn_gib` (default 8) and `crit` below `mem_crit_gib` (default 4), set in `defaults` or per node. GPU and OS share one pool on these boxes, so the card's memory bar follows headroom rather than percent used (a loaded GB10 sits above 90% normally). Low nodes are listed in `agg.low_mem` and flagged to the chat.
 
 ### `sections[]`
 

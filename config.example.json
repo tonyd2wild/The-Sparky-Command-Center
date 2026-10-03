@@ -16,7 +16,7 @@
     "connect_timeout": 8,
     "options": {"IdentitiesOnly": "yes", "BatchMode": "yes", "StrictHostKeyChecking": "accept-new"}
   },
-  "defaults": {"poll_interval": 7.0, "model_poll_interval": 6.0, "temp_warn": 70, "temp_hot": 84, "stale_after_s": 20},
+  "defaults": {"poll_interval": 7.0, "model_poll_interval": 6.0, "temp_warn": 70, "temp_hot": 84, "stale_after_s": 20, "mem_warn_gib": 8, "mem_crit_gib": 4},
   "nodes": [
     {"key": "spark1", "name": "Spark 1", "profile": "unified", "node_id": "spark-0001", "rank": 0,
      "user": "me", "host": "spark1.example.lan",

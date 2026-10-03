@@ -55,6 +55,7 @@ export interface UnifiedNode {
   key: string; name: string; profile: 'unified'; node_id?: string; rank?: number; reachable: boolean
   temp: number | null; power: number | null; util: number | null; sm_clock: number | null
   mem_total_gib: number | null; mem_used_gib: number | null; mem_pct: number | null; model_gib: number | null
+  mem_avail_gib?: number | null; mem_state?: 'ok' | 'warn' | 'crit' | null
   model?: string | null; pair?: string | null; ts: number; err: string | null
 }
 export interface Gpu {
@@ -81,8 +82,8 @@ export interface ModelState {
 export interface Metrics {
   ts: number; version: string; read_only: boolean
   nodes: FleetNode[]; switch: SwitchState; history: Record<string, number[]>; models: ModelState[]
-  agg: { gpu_count: number; total_power: number; hottest_unit: string | null; hottest_temp: number | null; all_ok: boolean; down: string[] }
-  thresholds: { temp_warn: number; temp_hot: number; stale_after_s: number }
+  agg: { gpu_count: number; total_power: number; hottest_unit: string | null; hottest_temp: number | null; all_ok: boolean; down: string[]; low_mem?: string[] }
+  thresholds: { temp_warn: number; temp_hot: number; stale_after_s: number; mem_warn_gib?: number; mem_crit_gib?: number }
 }
 export interface ComfyLane {
   key: string; lane: string; name: string; host: string; url: string; reachable: boolean; ts: number

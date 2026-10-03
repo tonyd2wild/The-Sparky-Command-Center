@@ -2,6 +2,8 @@ import type { DiscreteNode, Gpu, ModelState, SwitchState, UnifiedNode } from '..
 import { fmtBps, fmtTps, fx, isNum, tempTone, tempWord } from '../lib/format'
 import { Bar, Big, Chip, Fresh, KV, Led, Panel, Pill, Sparkline } from '../components/Panel'
 
+const MEM_TONE = { ok: 'good', warn: 'warn', crit: 'bad' } as const
+
 // One card per unit, the same fields v1 showed, in the JARVIS instrument style.
 
 const TempExtra = ({ t, warn, hot }: { t: number | null; warn: number; hot: number }) => {
@@ -24,8 +26,8 @@ export function UnifiedCard({ s, hist, warn, hot, stale }: { s: UnifiedNode; his
           </div>
           <KV k="GPU util">{fx(s.util)} %</KV>
           <Bar pct={s.util} />
-          <KV k="Unified mem">{fx(s.mem_used_gib, 1)} / {fx(s.mem_total_gib, 1)} GiB</KV>
-          <Bar pct={s.mem_pct} />
+          <KV k="Unified mem">{fx(s.mem_used_gib, 1)} / {fx(s.mem_total_gib, 1)} GiB{isNum(s.mem_avail_gib) ? ` · ${s.mem_avail_gib.toFixed(1)} free` : ''}</KV>
+          <Bar pct={s.mem_pct} tone={s.mem_state ? MEM_TONE[s.mem_state] : undefined} />
           <KV k="Model resident">{isNum(s.model_gib) ? `${s.model_gib.toFixed(1)} GiB` : '-'}</KV>
           <KV k="Serving" accent>{s.model || '-'}</KV>
           <Sparkline values={hist} />
