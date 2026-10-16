@@ -126,6 +126,16 @@ The board groups nodes into sections: `{"key", "eyebrow", "title", "subtitle", "
 
 MikroTik RouterOS over plain SSH (`host`, `user`, `ssh_key`), or any command you like through `exec`, for example an `expect` helper: `{"argv": ["expect", "helper.exp", "{cmd}"], "cwd": "/path"}`. `ports` lists the interfaces to chart. Delete the block, or set `"enabled": false`, to hide it.
 
+Use a read-only RouterOS user, not `admin`. Every command the board runs (`/system health print`, `/system resource print`, `/interface print stats`, `/interface ethernet monitor ... once`) works with only the `ssh` and `read` policies. As an admin on the switch, with the board host's public key:
+
+```
+/user group add name=monitor policy=ssh,read comment="read-only monitoring"
+/user add name=monitor group=monitor address=<board-or-jump-host-ip>/32 password="<long random, never used>"
+/user ssh-keys add user=monitor key="ssh-ed25519 AAAA... command-center"
+```
+
+The `address` limit accepts the login only from the host that connects (the board host, or the jump host if you reach the switch through `exec` or a `ProxyJump` in `~/.ssh/config`). With a key on the user, RouterOS refuses password login for it by default (`/ip ssh always-allow-password-login=no`, or `password-authentication=yes-if-no-key` on newer 7.x). Inline `ssh-keys add ... key=` needs a recent RouterOS 7; on older versions upload the `.pub` and use `/user ssh-keys import public-key-file=... user=monitor`. Then set `"user": "monitor"` and `"ssh_key"` in this block (with `exec`, have your helper log in as `monitor`).
+
 ### `models[]`
 
 `{"key", "label", "unit", "node", "endpoint", "port", "gpus", "model", "api_key"}`:

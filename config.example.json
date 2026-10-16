@@ -39,7 +39,7 @@
   "switch": {
     "enabled": true,
     "name": "Fabric switch", "badge": "RoCE FABRIC",
-    "host": "switch.example.lan", "user": "admin", "ssh_key": "~/.ssh/id_ed25519",
+    "host": "switch.example.lan", "user": "monitor", "ssh_key": "~/.ssh/id_ed25519",
     "_exec_example": {"argv": ["expect", "my-switch-helper.exp", "{cmd}"], "cwd": "/path/to/helper"},
     "ports": ["qsfp28-1-1", "qsfp28-1-2"],
     "poll_interval": 8.0, "temp_warn": 55, "temp_hot": 70
