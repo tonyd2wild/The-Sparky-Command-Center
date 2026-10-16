@@ -57,6 +57,10 @@ DEFAULTS = {
         "connect_timeout": 8,
         "options": {"IdentitiesOnly": "yes", "BatchMode": "yes",
                     "StrictHostKeyChecking": "accept-new"},
+        # Reuse one SSH connection per target instead of a full login every poll.
+        "multiplex": True,
+        "control_dir": "~/.ssh/command-center",
+        "control_persist": "60s",
     },
     "defaults": {"poll_interval": 7.0, "model_poll_interval": 6.0,
                  "temp_warn": 70, "temp_hot": 84, "stale_after_s": 20},
@@ -264,11 +268,44 @@ def _ssh_flags(obj):
     key = obj.get("ssh_key") or s.get("default_key")
     if key:
         flags += ["-i", os.path.expanduser(key)]
-    for k, v in (s.get("options") or {}).items():
+    opts = s.get("options") or {}
+    for k, v in opts.items():
         flags += ["-o", "%s=%s" % (k, v)]
+    flags += _multiplex_flags(obj, opts)
     flags += ["-o", "ConnectTimeout=%s" % int(obj.get("connect_timeout") or s.get("connect_timeout") or 8)]
     if obj.get("ssh_port"):
         flags += ["-p", str(obj["ssh_port"])]
+    return flags
+
+
+def _off(v):
+    return v is False or v == 0 or str(v).strip().lower() in ("false", "no", "off")
+
+
+def _multiplex_flags(obj, opts):
+    """ControlMaster flags, unless turned off (globally or per node/switch), on
+    Windows (no ControlMaster there), or the user already set ControlMaster/ControlPath."""
+    s = CFG["ssh"]
+    if os.name == "nt" or _off(s.get("multiplex", True)) or _off(obj.get("multiplex", True)):
+        return []
+    keys = {k.lower() for k in opts}
+    if keys & {"controlmaster", "controlpath"}:
+        return []
+    d = os.path.expanduser(s.get("control_dir") or "~/.ssh/command-center")
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        if os.stat(d).st_uid != os.getuid():
+            return []
+        os.chmod(d, 0o700)
+    except OSError:
+        return []
+    # %C is a hash of host, port and user: short enough for the 104-byte socket path limit.
+    flags = ["-o", "ControlMaster=auto", "-o", "ControlPath=%s" % os.path.join(d, "%C"),
+             "-o", "ControlPersist=%s" % (s.get("control_persist") or "60s")]
+    # A kept-open master to a node that rebooted would hang every poll until the poll
+    # timeout; keepalives make it notice and exit within ~10s.
+    if "serveraliveinterval" not in keys:
+        flags += ["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2"]
     return flags
 
 
@@ -292,7 +329,8 @@ def remote_argv(node, script):
     inner = ("ssh -o BatchMode=yes -o ConnectTimeout=6 %s %s"
              % (shlex.quote(_target(node)), shlex.quote(script)))
     jflags = _ssh_flags({"ssh_key": jump.get("ssh_key") or node.get("ssh_key"),
-                         "ssh_port": jump.get("ssh_port")})
+                         "ssh_port": jump.get("ssh_port"),
+                         "multiplex": jump.get("multiplex", node.get("multiplex", True))})
     return ["ssh"] + jflags + [jt, inner]
 
 

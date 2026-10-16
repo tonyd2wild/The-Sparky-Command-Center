@@ -106,6 +106,8 @@ No other change is needed. The dashboard still adds its live-data context as the
 
 `default_key`, `connect_timeout` and `options` (extra `-o` flags). A node can override the key with `ssh_key` and the port with `ssh_port`.
 
+By default the board reuses one SSH connection per node and switch (`ControlMaster=auto`, sockets under `control_dir`, kept open `control_persist` after the last poll) instead of a full login every poll. Set `"multiplex": false` here, or on a single node, a node's `jump`, or the switch, to turn it off. If `options` already sets `ControlMaster` or `ControlPath`, yours win (these flags also take precedence over `~/.ssh/config`). Not used on Windows or for a switch reached through `exec`. Nested jumps share one connection to the jump host, and sshd allows 10 sessions per connection by default (`MaxSessions`), so with more than ~8 nodes behind one jump host, raise that or set `"multiplex": false` on the `jump`.
+
 ### `nodes[]`
 
 | Key | Meaning |
